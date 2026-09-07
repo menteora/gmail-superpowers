@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.2.3
+// @version      0.2.4
 // @description  Copy a portable Gmail subject search as URL or Markdown from message rows and opened emails.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
