@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.2.4
+// @version      0.2.5
 // @description  Copy a portable Gmail subject search as URL or Markdown from message rows and opened emails.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -9,7 +9,7 @@
 // @run-at       document-idle
 // @homepageURL  https://github.com/menteora/gmail-superpowers
 // @supportURL   https://github.com/menteora/gmail-superpowers/issues
-// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.meta.js
+// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 // @downloadURL  https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 // ==/UserScript==
 
@@ -246,9 +246,6 @@
     button.title = isMarkdown ? 'Copia Gmail Search in Markdown' : 'Copia URL Gmail Search';
     button.setAttribute('aria-label', button.title);
 
-    // Gmail has delegated pointer/mouse handlers on several parent containers.
-    // Block propagation before Gmail sees the action, without cancelling the
-    // default pointer sequence that generates the button click.
     button.addEventListener('pointerdown', stopPropagationOnly, true);
     button.addEventListener('mousedown', stopPropagationOnly, true);
 
@@ -320,7 +317,6 @@
 
     const existing = document.getElementById(OPEN_ACTIONS_ID);
     if (existing) {
-      // Gmail may recycle the subject DOM while navigating between messages.
       if (existing.previousElementSibling !== subjectElement) {
         existing.remove();
       } else {
@@ -330,9 +326,6 @@
 
     const group = createActionGroup('', () => cleanText(subjectElement.textContent));
     group.id = OPEN_ACTIONS_ID;
-
-    // Keep the controls next to the subject rather than inside Gmail's toolbar.
-    // Gmail's toolbar uses delegated event handling that can swallow userscript clicks.
     subjectElement.insertAdjacentElement('afterend', group);
   }
 
