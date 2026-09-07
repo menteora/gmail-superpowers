@@ -1,6 +1,6 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds a small local workflow layer to Gmail: portable email links, per-conversation statuses, deadlines, Cases, a separate administration dashboard, and Markdown export.
+Tampermonkey userscript that adds a small local workflow layer to Gmail: portable email links, per-conversation statuses, deadlines, Cases, a separate administration dashboard, Markdown export, and JSON backup/import.
 
 All workflow data is stored locally in the browser with IndexedDB. No external backend is required.
 
@@ -75,9 +75,9 @@ The Case status is independent from the status and deadline of each individual c
 
 ## Separate Admin dashboard
 
-Version `0.6.0` replaces the growing set of floating management controls with one **Admin** button in the lower-right corner of Gmail.
+The **Admin** button in the lower-right corner of Gmail opens a separate browser tab at a local Gmail route used by Gmail Superpowers.
 
-Clicking **Admin** opens a separate browser tab at a local Gmail route used by Gmail Superpowers. Because the dashboard stays on the `mail.google.com` origin, it can access the same IndexedDB data without a server or synchronization layer.
+Because the dashboard stays on the `mail.google.com` origin, it can access the same IndexedDB data without a server or synchronization layer.
 
 The dashboard is visually isolated from Gmail and has four sections:
 
@@ -113,13 +113,42 @@ Shows every Case with:
 
 Shows all conversations that have a saved status, ordered with dated items first, together with their deadline and Case when available.
 
-### Export
+### Export / Import
 
-Provides an HTML-style preview and allows downloading or copying the Markdown export.
+Version `0.7.0` adds a full JSON backup/import workflow to the Admin dashboard.
+
+The page now provides:
+
+- **Scarica Markdown** — human-readable export;
+- **Copia Markdown** — copies the same Markdown to the clipboard;
+- **Backup JSON** — lossless local backup;
+- **Import JSON** — restores a previously generated Gmail Superpowers backup.
+
+The JSON backup contains:
+
+```text
+notes
+Deadlines
+Cases
+Case memberships
+latest-known email dates
+record timestamps and IDs
+```
+
+The backup also records the source Gmail account slot (`u0`, `u1`, etc.). During import, storage keys are rebased to the Gmail account slot currently open, so a backup created while the same mailbox was loaded in a different Gmail slot can still be restored cleanly.
+
+Two import modes are available:
+
+- **Merge — aggiungi/aggiorna**: existing data remains; imported records with the same key or Case ID replace those records.
+- **Sostituisci i dati correnti**: deletes Gmail Superpowers data for the currently open Gmail account slot before importing the backup. This mode requires an explicit confirmation.
+
+Replace mode does not delete Gmail Superpowers data belonging to other Gmail account slots in the same browser.
+
+Markdown is intentionally not used as the restore format because it is designed for reading and sharing rather than preserving internal IDs and exact relationships.
 
 ## Markdown export
 
-The export includes Cases, Case statuses, conversations, the latest known email date for linked conversations, conversation statuses, and deadlines.
+The Markdown export includes Cases, Case statuses, conversations, the latest known email date for linked conversations, conversation statuses, and deadlines.
 
 Example:
 
@@ -140,12 +169,34 @@ Conversazioni:
 
 ## Scadenze
 
-- 2026-09-15 — [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
+- 2026-09-15 - [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
   - Stato: Aspetto documentazione tecnica
   - Caso: Preventivo Rossi
 ```
 
 The exported email links use the same portable subject-search format as the normal Markdown copy action.
+
+## JSON backup format
+
+The backup file is versioned independently from the userscript:
+
+```json
+{
+  "format": "gmail-superpowers-backup",
+  "schemaVersion": 1,
+  "appVersion": "0.7.0",
+  "exportedAt": "2026-09-07T14:00:00.000Z",
+  "sourceAccount": "u0",
+  "data": {
+    "notes": [],
+    "deadlines": [],
+    "cases": [],
+    "members": []
+  }
+}
+```
+
+Import validates both the backup marker and schema version before writing data.
 
 ## Local storage
 
@@ -169,6 +220,8 @@ Local data:
 - is not stored in Gmail itself;
 - is not automatically synchronized between browsers or devices;
 - can be removed if browser storage for Gmail is cleared.
+
+For this reason, **Backup JSON** is the recommended way to preserve or move Gmail Superpowers data.
 
 ## Installation
 
