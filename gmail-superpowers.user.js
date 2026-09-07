@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.7.1
+// @version      0.7.2
 // @description  Portable Gmail links, local statuses, deadlines, cases, admin dashboard, Markdown export, and JSON backup/import.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -185,10 +185,10 @@
       .${ROW_NOTE}{background:rgba(251,188,4,.16);color:#5f4b00}
       .${ROW_CASE}{background:rgba(26,115,232,.12);color:#174ea6}
       .${ROW_DUE}{background:rgba(52,168,83,.13);color:#137333}.gsp-due-overdue{background:rgba(217,48,37,.13)!important;color:#b3261e!important}.gsp-due-today{background:rgba(251,188,4,.22)!important;color:#7a5200!important}
-      .gsp-btn{border:0;border-radius:50%;background:transparent;color:#5f6368;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;position:relative;z-index:20;pointer-events:auto!important;width:30px;height:30px;padding:5px}
+      .gsp-btn{border:0;border-radius:50%;background:transparent;color:#5f6368;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;position:relative;z-index:auto;pointer-events:auto!important;width:30px;height:30px;padding:5px}
       .${ROW_ACTIONS} .gsp-btn{width:26px;height:26px;padding:4px}.gsp-btn:hover{background:rgba(60,64,67,.12);color:#202124}.gsp-btn:active{background:rgba(60,64,67,.20)}.gsp-btn[disabled]{opacity:.32;cursor:default;background:transparent}.gsp-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
-      #${OPEN_ACTIONS_ID}{display:inline-flex;align-items:center;gap:2px;margin-left:8px;vertical-align:middle;position:relative;z-index:20;pointer-events:auto!important}
-      #${NOTE_PANEL_ID},#${DUE_PANEL_ID},#${CASE_PANEL_ID},#${CASE_PICKER_ID}{display:flex;align-items:center;gap:6px;margin:6px 0 10px;min-height:34px;max-width:820px;position:relative;z-index:20;font-family:Arial,sans-serif}
+      #${OPEN_ACTIONS_ID}{display:inline-flex;align-items:center;gap:2px;margin-left:8px;vertical-align:middle;position:relative;z-index:auto;pointer-events:auto!important}
+      #${NOTE_PANEL_ID},#${DUE_PANEL_ID},#${CASE_PANEL_ID},#${CASE_PICKER_ID}{display:flex;align-items:center;gap:6px;margin:6px 0 10px;min-height:34px;max-width:820px;position:relative;z-index:auto;font-family:Arial,sans-serif}
       #${CASE_PANEL_ID},#${CASE_PICKER_ID}{align-items:flex-start;padding:8px 10px;border:1px solid #dadce0;border-radius:10px;background:#fff;flex-wrap:wrap}
       .gsp-label{flex:0 0 auto;font-size:12px;font-weight:600;color:#5f6368;line-height:32px}.gsp-input{flex:1 1 auto;min-width:140px;height:32px;padding:5px 10px;border:1px solid #dadce0;border-radius:8px;outline:none;background:#fff;color:#202124;font:13px/20px Arial,sans-serif;box-sizing:border-box;pointer-events:auto!important}.gsp-input:focus{border-color:#1a73e8;box-shadow:0 0 0 1px #1a73e8}.gsp-date-input{flex:0 0 170px}
       .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}.gsp-member-meta{color:#80868b;margin-left:5px}
