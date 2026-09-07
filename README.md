@@ -1,6 +1,6 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, and **Cases** for grouping related conversations.
+Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, **Cases** for grouping related conversations, and Markdown export.
 
 ## Features
 
@@ -40,9 +40,9 @@ Preventivo Rossi   Stato: Aspetto risposta da Marco
 
 ### Cases: link separate conversations
 
-Version `0.4.0` adds **Cases**. A Case groups conversations that belong to the same issue, project or follow-up even when they are separate Gmail threads.
+A **Case** groups conversations that belong to the same issue, project or follow-up even when they are separate Gmail threads.
 
-Open a conversation and use the new **Case** icon next to the URL/Markdown actions. You can:
+Open a conversation and use the **Case** icon next to the URL/Markdown actions. You can:
 
 - create a new Case and attach the current conversation;
 - attach it to an existing Case;
@@ -76,6 +76,45 @@ The normal conversation status and the Case status are separate:
 
 A conversation currently belongs to at most one Case.
 
+### Export Markdown
+
+Version `0.5.0` adds a fixed **Export MD** button in Gmail.
+
+It downloads a `.md` file containing the local workflow data for the Gmail account currently open:
+
+- every Case;
+- the status of each Case;
+- every conversation linked to that Case;
+- each conversation in the portable Markdown format;
+- the conversation-specific status when present;
+- conversations that have a saved status but are not linked to a Case.
+
+Example export:
+
+```md
+# Gmail Superpowers
+
+## Casi
+
+### Preventivo Rossi
+
+Stato: Aspetto conferma finale
+
+Conversazioni:
+- [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
+  - Stato: Aspetto documentazione tecnica
+- [email: Conferma disponibilità](https://mail.google.com/mail/#search/...)
+
+## Conversazioni con stato senza caso
+
+- [email: Fattura settembre](https://mail.google.com/mail/#search/...)
+  - Stato: Aspetto nota di credito
+```
+
+The exported email links use the same portable Gmail subject-search format as the normal Markdown copy button; they do not depend on a mailbox-specific Gmail message ID.
+
+The export is generated completely in the browser and downloaded locally. No workflow data is sent to an external service.
+
 ## Local storage
 
 Everything is stored locally in the browser using IndexedDB:
@@ -89,7 +128,7 @@ gmail-superpowers
 
 Gmail thread identifiers are used locally when available. If Gmail does not expose a usable thread ID, the script can fall back to the normalized subject. Subject fallback is accepted only when the match is unique where ambiguity matters.
 
-The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated.
+The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated. **Export MD exports only the account slot currently open.**
 
 Local data:
 
