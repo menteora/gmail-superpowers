@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.7.0
+// @version      0.7.1
 // @description  Portable Gmail links, local statuses, deadlines, cases, admin dashboard, Markdown export, and JSON backup/import.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -931,6 +931,8 @@
       if (latest) metaParts.push(`ultima email ${latest}`);
       const due = findDeadlineForMember(member);
       if (due?.dueDate) metaParts.push(`scade ${formatDate(due.dueDate)}`);
+      const note = findNoteForMember(member);
+      if (cleanText(note?.text)) metaParts.push(`stato: ${cleanText(note.text)}`);
       if (metaParts.length) {
         const meta = document.createElement('span');
         meta.className = 'gsp-member-meta';
@@ -1120,7 +1122,7 @@
     return {
       format: BACKUP_FORMAT,
       schemaVersion: BACKUP_SCHEMA_VERSION,
-      appVersion: '0.7.0',
+      appVersion: '0.7.1',
       exportedAt: new Date().toISOString(),
       sourceAccount: getAccountScope(),
       data: {
