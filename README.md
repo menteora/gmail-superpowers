@@ -1,53 +1,59 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, **Cases** for grouping related conversations, Markdown export, and an HTML preview of the export.
+Tampermonkey userscript that adds a small local workflow layer to Gmail: portable email links, per-conversation statuses, deadlines, Cases, a separate administration dashboard, and Markdown export.
 
-## Features
+All workflow data is stored locally in the browser with IndexedDB. No external backend is required.
 
-### Portable Gmail links
+## Quick actions inside Gmail
 
-Each message row and opened conversation gets two actions:
+Each message row and opened conversation keeps the lightweight actions that are useful while reading email:
 
-- **Link** — copies a Gmail Search URL based on the subject.
+- **Link** — copies a portable Gmail Search URL based on the subject.
 - **Markdown** — copies the same search as Markdown.
+- **Case** — links the opened conversation to a Case.
 
-Example:
+Example portable link:
 
 ```md
 [email: Preventivo settembre](https://mail.google.com/mail/#search/...)
 ```
 
-The portable link intentionally uses a Gmail subject search instead of a mailbox-specific message ID.
+The link intentionally uses a subject search rather than a mailbox-specific message ID, so another recipient who has the same email can use it too.
 
-### Conversation status
+## Conversation status
 
-An opened conversation gets a local **Stato** field below the subject:
+An opened conversation has a local **Stato** field:
 
 ```text
 Stato  Aspetto risposta da Marco   ✓   🗑
 ```
 
 - `Enter` or ✓ saves.
-- Leaving the field saves changed text automatically.
+- Leaving the field saves changes automatically.
 - `Escape` restores the last saved value.
-- 🗑 deletes the status.
+- 🗑 removes the status.
 
-Saved status is also visible directly in the Gmail message list:
+The saved status is also visible as a compact badge in the Gmail message list.
+
+## Deadlines
+
+Version `0.6.0` adds a **Scadenza** field to every opened conversation.
 
 ```text
-Preventivo Rossi   Stato: Aspetto risposta da Marco
+Scadenza  [ 15/09/2026 ]   ✓   🗑
 ```
 
-### Cases: link separate conversations
+A deadline is stored independently from the conversation status, so an email can have:
 
-A **Case** groups conversations that belong to the same issue, project or follow-up even when they are separate Gmail threads.
+- a deadline without a status;
+- a status without a deadline;
+- both.
 
-Open a conversation and use the **Case** icon next to the URL/Markdown actions. You can:
+The deadline is also shown directly in the Gmail list. Expired, today, and future deadlines use different visual states.
 
-- create a new Case and attach the current conversation;
-- attach it to an existing Case;
-- move it to another Case;
-- unlink it from its Case.
+## Cases
+
+A **Case** groups multiple separate Gmail conversations that belong to the same issue, project, order, follow-up, or decision.
 
 Example:
 
@@ -61,33 +67,56 @@ Conversazioni:
 - Conferma disponibilità fornitore
 ```
 
-The Case panel lists all linked conversations as clickable links, so you can move between them quickly.
+The Case status is independent from the status and deadline of each individual conversation.
 
-A conversation that belongs to a Case also gets a compact Case preview in the Gmail list:
+## Separate Admin dashboard
+
+Version `0.6.0` replaces the growing set of floating management controls with one **Admin** button in the lower-right corner of Gmail.
+
+Clicking **Admin** opens a separate browser tab at a local Gmail route used by Gmail Superpowers. Because the dashboard stays on the `mail.google.com` origin, it can access the same IndexedDB data without a server or synchronization layer.
+
+The dashboard is visually isolated from Gmail and has four sections:
+
+### Scadenze
+
+The default view lists conversations ordered by due date and provides filters for:
+
+- all deadlines;
+- overdue;
+- today;
+- next 7 days;
+- next 30 days.
+
+Each row shows:
 
 ```text
-Preventivo Rossi   Caso: Preventivo Rossi · Aspetto conferma finale
+Scadenza | Email | Stato | Caso
 ```
 
-The normal conversation status and the Case status are separate:
+The date is editable directly from the dashboard.
 
-- **Conversation status** = note specific to that Gmail thread.
-- **Case status** = shared state of the whole issue containing multiple conversations.
+### Casi
 
-A conversation currently belongs to at most one Case.
+Shows every Case with:
 
-### Export Markdown
+- Case status;
+- linked conversations;
+- conversation deadlines;
+- conversation-specific statuses.
 
-The fixed **Export MD** button downloads a `.md` file containing the local workflow data for the Gmail account currently open:
+### Stati
 
-- every Case;
-- the status of each Case;
-- every conversation linked to that Case;
-- each conversation in the portable Markdown format;
-- the conversation-specific status when present;
-- conversations that have a saved status but are not linked to a Case.
+Shows all conversations that have a saved status, ordered with dated items first, together with their deadline and Case when available.
 
-Example export:
+### Export
+
+Provides an HTML-style preview and allows downloading or copying the Markdown export.
+
+## Markdown export
+
+The export includes Cases, Case statuses, conversations, conversation statuses, and deadlines.
+
+Example:
 
 ```md
 # Gmail Superpowers
@@ -101,55 +130,39 @@ Stato: Aspetto conferma finale
 Conversazioni:
 - [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
   - Stato: Aspetto documentazione tecnica
-- [email: Conferma disponibilità](https://mail.google.com/mail/#search/...)
+  - Scadenza: 2026-09-15
 
-## Conversazioni con stato senza caso
+## Scadenze
 
-- [email: Fattura settembre](https://mail.google.com/mail/#search/...)
-  - Stato: Aspetto nota di credito
+- 2026-09-15 — [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
+  - Stato: Aspetto documentazione tecnica
+  - Caso: Preventivo Rossi
 ```
 
-### HTML preview
-
-Version `0.5.1` adds an **Anteprima** button next to **Export MD**.
-
-It opens an in-browser HTML view of the same data before downloading it. The preview shows:
-
-- Cases as separate cards;
-- Case status;
-- linked conversations as clickable Gmail Search links;
-- per-conversation status;
-- conversations with a status but no Case.
-
-The preview includes a **Scarica MD** button, so the Markdown file can be downloaded directly from the preview. Clicking outside the dialog, the close button, or pressing `Escape` closes it.
-
-The preview is built with DOM APIs instead of `innerHTML`, matching the script's Trusted Types-safe approach.
-
-The exported email links use the same portable Gmail subject-search format as the normal Markdown copy button; they do not depend on a mailbox-specific Gmail message ID.
-
-Both export and preview are generated completely in the browser. No workflow data is sent to an external service.
+The exported email links use the same portable subject-search format as the normal Markdown copy action.
 
 ## Local storage
 
-Everything is stored locally in the browser using IndexedDB:
+Data is stored in IndexedDB:
 
 ```text
 gmail-superpowers
 ├── thread-notes
+├── deadlines
 ├── cases
 └── case-members
 ```
 
-Gmail thread identifiers are used locally when available. If Gmail does not expose a usable thread ID, the script can fall back to the normalized subject. Subject fallback is accepted only when the match is unique where ambiguity matters.
+Gmail thread identifiers are used locally when available. When Gmail does not expose a usable thread identifier, the script can fall back to a normalized subject where the match is unambiguous.
 
-The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated. Export and preview include only the account slot currently open.
+The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is part of the local data model so different Gmail accounts in the same browser stay separated.
 
 Local data:
 
 - is not sent to an external API;
-- is not stored inside Gmail;
-- is not synchronized automatically across browsers or devices;
-- can be lost if the site's browser storage is cleared.
+- is not stored in Gmail itself;
+- is not automatically synchronized between browsers or devices;
+- can be removed if browser storage for Gmail is cleared.
 
 ## Installation
 
@@ -160,7 +173,7 @@ Local data:
 https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 ```
 
-3. Confirm installation in Tampermonkey.
+3. Confirm the installation in Tampermonkey.
 4. Reload Gmail.
 
 ## Automatic updates
@@ -176,9 +189,11 @@ When publishing a new version, increment `@version` in `gmail-superpowers.user.j
 
 ## Technical notes
 
-Gmail is a single-page application and its internal DOM can change. The script uses a `MutationObserver` to re-attach controls when Gmail changes views without a full reload.
+Gmail is a single-page application. The normal Gmail integration uses a `MutationObserver` to re-attach lightweight controls while navigating without a full page reload.
 
-The script avoids assigning SVG or preview markup through `innerHTML`; UI elements are built through DOM APIs so Gmail's Trusted Types policy does not block them.
+The Admin dashboard runs on a dedicated `#gsp-admin` route in a separate tab and uses a Shadow DOM so Gmail's styles do not leak into the administrative interface.
+
+SVG icons are built through DOM APIs instead of assigning SVG markup with `innerHTML`, avoiding Gmail Trusted Types restrictions.
 
 ## Files
 
