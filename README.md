@@ -62,10 +62,14 @@ Caso: Preventivo Rossi
 Stato del caso: Aspetto conferma finale
 
 Conversazioni:
-- Richiesta preventivo iniziale
-- Specifiche tecniche
-- Conferma disponibilità fornitore
+- Richiesta preventivo iniziale · ultima email 05/09/2026 14:32
+- Specifiche tecniche · ultima email 06/09/2026 09:18
+- Conferma disponibilità fornitore · ultima email 07/09/2026 11:04
 ```
+
+Version `0.6.1` stores and shows the date/time of the latest message known for each conversation linked to a Case. The value is captured when the conversation is linked, refreshed when that conversation is opened again, and can also be backfilled from the Gmail message list when Gmail exposes the row date.
+
+Existing Case memberships remain valid: their latest-email date appears after Gmail Superpowers can observe that conversation again.
 
 The Case status is independent from the status and deadline of each individual conversation.
 
@@ -101,6 +105,7 @@ Shows every Case with:
 
 - Case status;
 - linked conversations;
+- latest known email date/time for each linked conversation;
 - conversation deadlines;
 - conversation-specific statuses.
 
@@ -114,7 +119,7 @@ Provides an HTML-style preview and allows downloading or copying the Markdown ex
 
 ## Markdown export
 
-The export includes Cases, Case statuses, conversations, conversation statuses, and deadlines.
+The export includes Cases, Case statuses, conversations, the latest known email date for linked conversations, conversation statuses, and deadlines.
 
 Example:
 
@@ -129,6 +134,7 @@ Stato: Aspetto conferma finale
 
 Conversazioni:
 - [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
+  - Ultima email: 05/09/2026 14:32
   - Stato: Aspetto documentazione tecnica
   - Scadenza: 2026-09-15
 
