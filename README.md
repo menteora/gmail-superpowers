@@ -1,6 +1,6 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds quick actions to Gmail for copying portable Gmail searches and keeping a local status note for each open conversation.
+Tampermonkey userscript that adds quick actions to Gmail for copying portable Gmail searches and keeping a local status note for each conversation.
 
 The generated link does not point to a Gmail-specific message or thread ID. Instead, it opens a Gmail search such as:
 
@@ -31,7 +31,21 @@ Stato  Aspetto risposta da X e Y   ✓   🗑
 
 The status can be changed directly in the field and saved with the check button or by pressing **Enter**. Leaving the field also saves changes automatically. **Escape** restores the last saved value. The trash button deletes the stored status immediately.
 
-The buttons and status field are added dynamically, so they continue to appear while navigating Gmail without a full page reload.
+### Status in the message list
+
+If a conversation has a saved status, the same text is also shown directly next to its subject in the Gmail message list as a compact preview.
+
+Example:
+
+```text
+Preventivo Rossi   Stato: Aspetto risposta da Marco
+```
+
+This lets you see which conversations are waiting on someone or need follow-up without opening each email.
+
+The list preview prefers Gmail's thread identifier when it can be read from the row. If that identifier is not available, it can fall back to the saved subject. A subject fallback is used only when it identifies a single saved note, to reduce accidental matches between different conversations with the same subject.
+
+The buttons, status field and list previews are added dynamically, so they continue to appear while navigating Gmail without a full page reload.
 
 ## Local status storage
 
@@ -101,7 +115,7 @@ The Markdown button copies:
 
 ## Notes
 
-Gmail is a single-page application and its internal DOM can change over time. The script therefore uses a `MutationObserver` to add the actions and status field when Gmail renders new message rows or opens a conversation.
+Gmail is a single-page application and its internal DOM can change over time. The script therefore uses a `MutationObserver` to add the actions, status field and status previews when Gmail renders new message rows or opens a conversation.
 
 The script deliberately avoids Gmail message IDs and thread IDs for the **portable search link**. Its purpose is to create a search that can also work in another recipient's Gmail account, provided that recipient has the same email and the subject is sufficiently distinctive.
 
