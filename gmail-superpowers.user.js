@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.2.3
+// @version      0.2.4
 // @description  Copy a portable Gmail subject search as URL or Markdown from message rows and opened emails.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -17,7 +17,7 @@
   'use strict';
 
   const ROW_CLASS = 'gmail-superpowers-row-actions';
-  const TOOLBAR_ID = 'gmail-superpowers-toolbar-actions';
+  const OPEN_ACTIONS_ID = 'gmail-superpowers-open-actions';
   const TOAST_ID = 'gmail-superpowers-toast';
   const STYLE_ID = 'gmail-superpowers-style';
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -76,6 +76,9 @@
         align-items: center;
         justify-content: center;
         box-sizing: border-box;
+        position: relative;
+        z-index: 20;
+        pointer-events: auto !important;
       }
 
       .gmail-superpowers-icon-button:hover {
@@ -94,16 +97,20 @@
         pointer-events: none;
       }
 
-      #${TOOLBAR_ID} {
+      #${OPEN_ACTIONS_ID} {
         display: inline-flex;
         align-items: center;
         gap: 2px;
-        margin-left: 6px;
+        margin-left: 8px;
+        vertical-align: middle;
+        position: relative;
+        z-index: 20;
+        pointer-events: auto !important;
       }
 
-      #${TOOLBAR_ID} .gmail-superpowers-icon-button {
-        width: 32px;
-        height: 32px;
+      #${OPEN_ACTIONS_ID} .gmail-superpowers-icon-button {
+        width: 30px;
+        height: 30px;
       }
     `;
     document.head.appendChild(style);
@@ -116,7 +123,7 @@
       .trim();
   }
 
-  function getOpenMailSubject() {
+  function findOpenMailSubjectElement() {
     const selectors = [
       'h2.hP',
       '.ha h2',
@@ -125,12 +132,17 @@
 
     for (const selector of selectors) {
       for (const element of document.querySelectorAll(selector)) {
+        const rect = element.getBoundingClientRect();
         const subject = cleanText(element.textContent);
-        if (subject) return subject;
+        if (subject && rect.width > 0 && rect.height > 0) return element;
       }
     }
 
-    return '';
+    return null;
+  }
+
+  function getOpenMailSubject() {
+    return cleanText(findOpenMailSubjectElement()?.textContent);
   }
 
   function getRowSubject(row) {
@@ -214,7 +226,12 @@
     window.setTimeout(() => toast.remove(), 2200);
   }
 
-  function stopMailOpen(event) {
+  function stopPropagationOnly(event) {
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  function stopAction(event) {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -229,10 +246,14 @@
     button.title = isMarkdown ? 'Copia Gmail Search in Markdown' : 'Copia URL Gmail Search';
     button.setAttribute('aria-label', button.title);
 
-    button.addEventListener('mousedown', stopMailOpen, true);
+    // Gmail has delegated pointer/mouse handlers on several parent containers.
+    // Block propagation before Gmail sees the action, without cancelling the
+    // default pointer sequence that generates the button click.
+    button.addEventListener('pointerdown', stopPropagationOnly, true);
+    button.addEventListener('mousedown', stopPropagationOnly, true);
 
     button.addEventListener('click', async (event) => {
-      stopMailOpen(event);
+      stopAction(event);
 
       const subject = cleanText(getSubject());
       if (!subject) {
@@ -289,39 +310,30 @@
     document.querySelectorAll('tr.zA').forEach(enhanceMailRow);
   }
 
-  function findMessageToolbar() {
-    const candidates = [
-      '[gh="mtb"]',
-      'div[role="toolbar"]'
-    ];
-
-    for (const selector of candidates) {
-      for (const toolbar of document.querySelectorAll(selector)) {
-        if (toolbar.closest('tr.zA')) continue;
-        const rect = toolbar.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) return toolbar;
-      }
-    }
-
-    return null;
-  }
-
   function enhanceOpenMessage() {
-    const subject = getOpenMailSubject();
+    const subjectElement = findOpenMailSubjectElement();
 
-    if (!subject) {
-      document.getElementById(TOOLBAR_ID)?.remove();
+    if (!subjectElement) {
+      document.getElementById(OPEN_ACTIONS_ID)?.remove();
       return;
     }
 
-    if (document.getElementById(TOOLBAR_ID)) return;
+    const existing = document.getElementById(OPEN_ACTIONS_ID);
+    if (existing) {
+      // Gmail may recycle the subject DOM while navigating between messages.
+      if (existing.previousElementSibling !== subjectElement) {
+        existing.remove();
+      } else {
+        return;
+      }
+    }
 
-    const toolbar = findMessageToolbar();
-    if (!toolbar) return;
+    const group = createActionGroup('', () => cleanText(subjectElement.textContent));
+    group.id = OPEN_ACTIONS_ID;
 
-    const group = createActionGroup('', getOpenMailSubject);
-    group.id = TOOLBAR_ID;
-    toolbar.appendChild(group);
+    // Keep the controls next to the subject rather than inside Gmail's toolbar.
+    // Gmail's toolbar uses delegated event handling that can swallow userscript clicks.
+    subjectElement.insertAdjacentElement('afterend', group);
   }
 
   let refreshTimer = null;
