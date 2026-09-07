@@ -1,6 +1,6 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, **Cases** for grouping related conversations, and Markdown export.
+Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, **Cases** for grouping related conversations, Markdown export, and an HTML preview of the export.
 
 ## Features
 
@@ -78,9 +78,7 @@ A conversation currently belongs to at most one Case.
 
 ### Export Markdown
 
-Version `0.5.0` adds a fixed **Export MD** button in Gmail.
-
-It downloads a `.md` file containing the local workflow data for the Gmail account currently open:
+The fixed **Export MD** button downloads a `.md` file containing the local workflow data for the Gmail account currently open:
 
 - every Case;
 - the status of each Case;
@@ -111,9 +109,25 @@ Conversazioni:
   - Stato: Aspetto nota di credito
 ```
 
+### HTML preview
+
+Version `0.5.1` adds an **Anteprima** button next to **Export MD**.
+
+It opens an in-browser HTML view of the same data before downloading it. The preview shows:
+
+- Cases as separate cards;
+- Case status;
+- linked conversations as clickable Gmail Search links;
+- per-conversation status;
+- conversations with a status but no Case.
+
+The preview includes a **Scarica MD** button, so the Markdown file can be downloaded directly from the preview. Clicking outside the dialog, the close button, or pressing `Escape` closes it.
+
+The preview is built with DOM APIs instead of `innerHTML`, matching the script's Trusted Types-safe approach.
+
 The exported email links use the same portable Gmail subject-search format as the normal Markdown copy button; they do not depend on a mailbox-specific Gmail message ID.
 
-The export is generated completely in the browser and downloaded locally. No workflow data is sent to an external service.
+Both export and preview are generated completely in the browser. No workflow data is sent to an external service.
 
 ## Local storage
 
@@ -128,7 +142,7 @@ gmail-superpowers
 
 Gmail thread identifiers are used locally when available. If Gmail does not expose a usable thread ID, the script can fall back to the normalized subject. Subject fallback is accepted only when the match is unique where ambiguity matters.
 
-The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated. **Export MD exports only the account slot currently open.**
+The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated. Export and preview include only the account slot currently open.
 
 Local data:
 
@@ -164,7 +178,7 @@ When publishing a new version, increment `@version` in `gmail-superpowers.user.j
 
 Gmail is a single-page application and its internal DOM can change. The script uses a `MutationObserver` to re-attach controls when Gmail changes views without a full reload.
 
-The script avoids assigning SVG markup through `innerHTML`; icons are built through DOM APIs so Gmail's Trusted Types policy does not block them.
+The script avoids assigning SVG or preview markup through `innerHTML`; UI elements are built through DOM APIs so Gmail's Trusted Types policy does not block them.
 
 ## Files
 
