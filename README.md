@@ -1,125 +1,131 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds quick actions to Gmail for copying portable Gmail searches and keeping a local status note for each conversation.
-
-The generated link does not point to a Gmail-specific message or thread ID. Instead, it opens a Gmail search such as:
-
-```text
-subject:"Example subject"
-```
-
-This makes the link useful for other people who received the same email, because Gmail searches inside the mailbox of whoever opens it.
+Tampermonkey userscript that adds local workflow tools to Gmail: portable search links, per-conversation status notes, and **Cases** for grouping related conversations.
 
 ## Features
 
-Gmail Superpowers adds two actions to each email row in the Gmail message list and also to an opened email:
+### Portable Gmail links
 
-- **Link icon** — copies the Gmail Search URL.
-- **Markdown icon** — copies the same search as Markdown in the form:
+Each message row and opened conversation gets two actions:
+
+- **Link** — copies a Gmail Search URL based on the subject.
+- **Markdown** — copies the same search as Markdown.
+
+Example:
 
 ```md
-[email: Example subject](https://mail.google.com/mail/#search/...)
+[email: Preventivo settembre](https://mail.google.com/mail/#search/...)
 ```
 
-When a conversation is open, Gmail Superpowers also adds a compact **Stato** field below the subject.
+The portable link intentionally uses a Gmail subject search instead of a mailbox-specific message ID.
 
-Example:
+### Conversation status
+
+An opened conversation gets a local **Stato** field below the subject:
 
 ```text
-Stato  Aspetto risposta da X e Y   ✓   🗑
+Stato  Aspetto risposta da Marco   ✓   🗑
 ```
 
-The status can be changed directly in the field and saved with the check button or by pressing **Enter**. Leaving the field also saves changes automatically. **Escape** restores the last saved value. The trash button deletes the stored status immediately.
+- `Enter` or ✓ saves.
+- Leaving the field saves changed text automatically.
+- `Escape` restores the last saved value.
+- 🗑 deletes the status.
 
-### Status in the message list
-
-If a conversation has a saved status, the same text is also shown directly next to its subject in the Gmail message list as a compact preview.
-
-Example:
+Saved status is also visible directly in the Gmail message list:
 
 ```text
 Preventivo Rossi   Stato: Aspetto risposta da Marco
 ```
 
-This lets you see which conversations are waiting on someone or need follow-up without opening each email.
+### Cases: link separate conversations
 
-The list preview prefers Gmail's thread identifier when it can be read from the row. If that identifier is not available, it can fall back to the saved subject. A subject fallback is used only when it identifies a single saved note, to reduce accidental matches between different conversations with the same subject.
+Version `0.4.0` adds **Cases**. A Case groups conversations that belong to the same issue, project or follow-up even when they are separate Gmail threads.
 
-The buttons, status field and list previews are added dynamically, so they continue to appear while navigating Gmail without a full page reload.
+Open a conversation and use the new **Case** icon next to the URL/Markdown actions. You can:
 
-## Local status storage
+- create a new Case and attach the current conversation;
+- attach it to an existing Case;
+- move it to another Case;
+- unlink it from its Case.
 
-Status notes are stored in the browser with **IndexedDB** in a dedicated database:
+Example:
+
+```text
+Caso: Preventivo Rossi
+Stato del caso: Aspetto conferma finale
+
+Conversazioni:
+- Richiesta preventivo iniziale
+- Specifiche tecniche
+- Conferma disponibilità fornitore
+```
+
+The Case panel lists all linked conversations as clickable links, so you can move between them quickly.
+
+A conversation that belongs to a Case also gets a compact Case preview in the Gmail list:
+
+```text
+Preventivo Rossi   Caso: Preventivo Rossi · Aspetto conferma finale
+```
+
+The normal conversation status and the Case status are separate:
+
+- **Conversation status** = note specific to that Gmail thread.
+- **Case status** = shared state of the whole issue containing multiple conversations.
+
+A conversation currently belongs to at most one Case.
+
+## Local storage
+
+Everything is stored locally in the browser using IndexedDB:
 
 ```text
 gmail-superpowers
-└── thread-notes
+├── thread-notes
+├── cases
+└── case-members
 ```
 
-Whenever Gmail exposes a thread identifier in the current URL, the note is associated with that thread. If a usable thread identifier is not available, the script falls back to the email subject.
+Gmail thread identifiers are used locally when available. If Gmail does not expose a usable thread ID, the script can fall back to the normalized subject. Subject fallback is accepted only when the match is unique where ambiguity matters.
 
-The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is also included in the local key so notes from different Gmail accounts in the same browser do not normally overlap.
+The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is included in local records so different Gmail accounts in the same browser remain separated.
 
-These notes are intentionally local:
+Local data:
 
-- they are not sent to any API;
-- they are not stored in Gmail;
-- they are not synchronized between browsers or devices;
-- clearing the site's browser storage can remove them.
+- is not sent to an external API;
+- is not stored inside Gmail;
+- is not synchronized automatically across browsers or devices;
+- can be lost if the site's browser storage is cleared.
 
 ## Installation
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) in your browser.
-2. Open this raw userscript URL:
+1. Install [Tampermonkey](https://www.tampermonkey.net/).
+2. Open:
 
 ```text
 https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 ```
 
-3. Tampermonkey should show the installation page for **Gmail Superpowers**.
-4. Confirm the installation.
-5. Reload Gmail.
+3. Confirm installation in Tampermonkey.
+4. Reload Gmail.
 
 ## Automatic updates
 
-The userscript uses the same raw `.user.js` file for both update checking and downloading:
+There is only one userscript file. Both update and download URLs point to it:
 
 ```javascript
 // @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 // @downloadURL  https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 ```
 
-When publishing a new version, increment `@version` in `gmail-superpowers.user.js`. Tampermonkey can then detect it with **Check for userscript updates**.
+When publishing a new version, increment `@version` in `gmail-superpowers.user.js`.
 
-There is no separate `.meta.js` file.
+## Technical notes
 
-## Gmail Search behavior
+Gmail is a single-page application and its internal DOM can change. The script uses a `MutationObserver` to re-attach controls when Gmail changes views without a full reload.
 
-For an email with subject:
-
-```text
-Preventivo settembre
-```
-
-The URL button copies a Gmail Search URL equivalent to:
-
-```text
-https://mail.google.com/mail/#search/subject%3A%22Preventivo%20settembre%22
-```
-
-The Markdown button copies:
-
-```md
-[email: Preventivo settembre](https://mail.google.com/mail/#search/subject%3A%22Preventivo%20settembre%22)
-```
-
-## Notes
-
-Gmail is a single-page application and its internal DOM can change over time. The script therefore uses a `MutationObserver` to add the actions, status field and status previews when Gmail renders new message rows or opens a conversation.
-
-The script deliberately avoids Gmail message IDs and thread IDs for the **portable search link**. Its purpose is to create a search that can also work in another recipient's Gmail account, provided that recipient has the same email and the subject is sufficiently distinctive.
-
-Thread IDs may still be used **locally** as IndexedDB keys for the status note because that information never leaves the current browser.
+The script avoids assigning SVG markup through `innerHTML`; icons are built through DOM APIs so Gmail's Trusted Types policy does not block them.
 
 ## Files
 
