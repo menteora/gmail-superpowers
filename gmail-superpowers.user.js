@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.4.0
-// @description  Portable Gmail links, local status notes, and local cases that group related conversations.
+// @version      0.5.0
+// @description  Portable Gmail links, local status notes, cases, and Markdown export.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_setClipboard
@@ -23,6 +23,7 @@
   const NOTE_PANEL_ID = 'gmail-superpowers-note-panel';
   const CASE_PANEL_ID = 'gmail-superpowers-case-panel';
   const CASE_PICKER_ID = 'gmail-superpowers-case-picker';
+  const EXPORT_BUTTON_ID = 'gmail-superpowers-export';
   const TOAST_ID = 'gmail-superpowers-toast';
   const STYLE_ID = 'gmail-superpowers-style';
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -53,7 +54,8 @@
       'M7.5 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Zm9 9a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z',
       'M10.2 8.3 14 12.1l-1.4 1.4-3.8-3.8 1.4-1.4Z'
     ],
-    close: ['M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z']
+    close: ['M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z'],
+    download: ['M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z']
   };
 
   function emptyCache() {
@@ -83,7 +85,7 @@
   function isLikelyThreadId(candidate) {
     const value = cleanText(candidate).replace(/^#/, '');
     if (!value || value.length < 8) return false;
-    if (['inbox','sent','drafts','starred','important','all','spam','trash','search'].includes(value.toLowerCase())) return false;
+    if (['inbox', 'sent', 'drafts', 'starred', 'important', 'all', 'spam', 'trash', 'search'].includes(value.toLowerCase())) return false;
     return !value.includes('%22') && !value.includes('%3a') && !value.includes(' ');
   }
 
@@ -95,10 +97,12 @@
 
   function getRowThreadId(row) {
     const attrs = ['data-legacy-thread-id', 'data-thread-id', 'data-thread-perm-id'];
+
     for (const name of attrs) {
       const value = row.getAttribute(name);
       if (isLikelyThreadId(value)) return value.replace(/^#/, '');
     }
+
     const nested = row.querySelector('[data-legacy-thread-id], [data-thread-id], [data-thread-perm-id]');
     if (nested) {
       for (const name of attrs) {
@@ -106,6 +110,7 @@
         if (isLikelyThreadId(value)) return value.replace(/^#/, '');
       }
     }
+
     for (const link of row.querySelectorAll('a[href]')) {
       const href = link.getAttribute('href') || '';
       if (!href.includes('#')) continue;
@@ -113,6 +118,7 @@
       const candidate = parts[parts.length - 1] || '';
       if (isLikelyThreadId(candidate)) return candidate.replace(/^#/, '');
     }
+
     return '';
   }
 
@@ -132,8 +138,8 @@
   }
 
   function getRowSubject(row) {
-    const el = row.querySelector('span.bog') || row.querySelector('.y6 span') || row.querySelector('[data-thread-id] span');
-    return cleanText(el?.textContent);
+    const element = row.querySelector('span.bog') || row.querySelector('.y6 span') || row.querySelector('[data-thread-id] span');
+    return cleanText(element?.textContent);
   }
 
   function findRowHost(row) {
@@ -145,16 +151,20 @@
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+
     for (const d of ICON_PATHS[kind] || []) {
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('d', d);
       svg.appendChild(path);
     }
+
     return svg;
   }
 
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
+
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
@@ -175,6 +185,9 @@
       .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}
       .gsp-picker-list{display:flex;flex-wrap:wrap;gap:6px;width:100%}.gsp-case-choice{border:1px solid #dadce0;border-radius:14px;background:#fff;padding:4px 9px;font:12px Arial,sans-serif;cursor:pointer}.gsp-case-choice:hover{background:#f1f3f4}
       .gsp-picker-new{display:flex;gap:6px;width:100%;align-items:center}.gsp-picker-new .gsp-input{max-width:420px}.gsp-muted{font:11px/16px Arial,sans-serif;color:#80868b;width:100%}
+      #${EXPORT_BUTTON_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;height:34px;padding:0 12px 0 9px;border:1px solid #dadce0;border-radius:18px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:6px;font:12px Arial,sans-serif;pointer-events:auto!important}
+      #${EXPORT_BUTTON_ID}:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}
+      #${EXPORT_BUTTON_ID} svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
     `;
     document.head.appendChild(style);
   }
@@ -214,6 +227,14 @@
     return value.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
   }
 
+  function escapeMarkdownText(value) {
+    return cleanText(value)
+      .replace(/\\/g, '\\\\')
+      .replace(/([*_`#])/g, '\\$1')
+      .replace(/\[/g, '\\[')
+      .replace(/\]/g, '\\]');
+  }
+
   function buildGmailSearch(subject) {
     const query = `subject:"${escapeGmailSearchValue(subject)}"`;
     const url = `https://mail.google.com/mail/#search/${encodeURIComponent(query)}`;
@@ -223,6 +244,7 @@
   async function copyText(text) {
     if (typeof GM_setClipboard === 'function') return GM_setClipboard(text, 'text');
     if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+
     const textarea = document.createElement('textarea');
     textarea.value = text;
     textarea.style.position = 'fixed';
@@ -236,69 +258,87 @@
 
   function showToast(message, isError = false) {
     document.getElementById(TOAST_ID)?.remove();
+
     const toast = document.createElement('div');
     toast.id = TOAST_ID;
     toast.textContent = message;
-    Object.assign(toast.style, {position:'fixed',right:'24px',bottom:'24px',zIndex:'2147483647',maxWidth:'440px',padding:'10px 14px',borderRadius:'8px',background:isError?'#b3261e':'#202124',color:'#fff',font:'13px/1.4 Arial,sans-serif',boxShadow:'0 4px 18px rgba(0,0,0,.25)'});
+    Object.assign(toast.style, {
+      position: 'fixed',
+      right: '24px',
+      bottom: '70px',
+      zIndex: '2147483647',
+      maxWidth: '440px',
+      padding: '10px 14px',
+      borderRadius: '8px',
+      background: isError ? '#b3261e' : '#202124',
+      color: '#fff',
+      font: '13px/1.4 Arial,sans-serif',
+      boxShadow: '0 4px 18px rgba(0,0,0,.25)'
+    });
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 2200);
   }
 
   function openDatabase() {
     if (dbPromise) return dbPromise;
+
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
+
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, {keyPath:'key'});
-        if (!db.objectStoreNames.contains(CASE_STORE)) db.createObjectStore(CASE_STORE, {keyPath:'id'});
+        if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, {keyPath: 'key'});
+        if (!db.objectStoreNames.contains(CASE_STORE)) db.createObjectStore(CASE_STORE, {keyPath: 'id'});
+
         if (!db.objectStoreNames.contains(MEMBER_STORE)) {
-          const store = db.createObjectStore(MEMBER_STORE, {keyPath:'memberKey'});
-          store.createIndex('groupId', 'groupId', {unique:false});
+          const store = db.createObjectStore(MEMBER_STORE, {keyPath: 'memberKey'});
+          store.createIndex('groupId', 'groupId', {unique: false});
         } else {
           const store = request.transaction.objectStore(MEMBER_STORE);
-          if (!store.indexNames.contains('groupId')) store.createIndex('groupId', 'groupId', {unique:false});
+          if (!store.indexNames.contains('groupId')) store.createIndex('groupId', 'groupId', {unique: false});
         }
       };
+
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('IndexedDB non disponibile'));
     });
+
     return dbPromise;
   }
 
   async function storeGet(storeName, key) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readonly').objectStore(storeName).get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
+      const request = db.transaction(storeName, 'readonly').objectStore(storeName).get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
     });
   }
 
   async function storeGetAll(storeName) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
+      const request = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
     });
   }
 
   async function storePut(storeName, value) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value);
-      req.onsuccess = () => resolve(value);
-      req.onerror = () => reject(req.error);
+      const request = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value);
+      request.onsuccess = () => resolve(value);
+      request.onerror = () => reject(request.error);
     });
   }
 
   async function storeDelete(storeName, key) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      const request = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
     });
   }
 
@@ -309,53 +349,70 @@
   async function loadCache(force = false) {
     if (force) invalidateCache();
     if (cachePromise) return cachePromise;
+
     cachePromise = (async () => {
-      const [notes, cases, members] = await Promise.all([storeGetAll(NOTE_STORE), storeGetAll(CASE_STORE), storeGetAll(MEMBER_STORE)]);
+      const [notes, cases, members] = await Promise.all([
+        storeGetAll(NOTE_STORE),
+        storeGetAll(CASE_STORE),
+        storeGetAll(MEMBER_STORE)
+      ]);
+
       const account = getAccountScope();
       const next = emptyCache();
+
       for (const record of notes) {
         if (!record?.key?.startsWith(`${account}:`) || !cleanText(record.text)) continue;
         next.notesByKey.set(record.key, record);
-        const s = normalizeSubject(record.subject);
-        if (s) next.notesBySubject.set(s, [...(next.notesBySubject.get(s) || []), record]);
+        const subject = normalizeSubject(record.subject);
+        if (subject) next.notesBySubject.set(subject, [...(next.notesBySubject.get(subject) || []), record]);
       }
+
       for (const record of cases) {
         if (record?.account === account) next.casesById.set(record.id, record);
       }
+
       for (const record of members) {
         if (record?.account !== account) continue;
         next.membersByKey.set(record.memberKey, record);
-        const s = normalizeSubject(record.subject);
-        if (s) next.membersBySubject.set(s, [...(next.membersBySubject.get(s) || []), record]);
+        const subject = normalizeSubject(record.subject);
+        if (subject) next.membersBySubject.set(subject, [...(next.membersBySubject.get(subject) || []), record]);
         next.membersByCase.set(record.groupId, [...(next.membersByCase.get(record.groupId) || []), record]);
       }
+
       cache = next;
     })();
-    try { await cachePromise; } catch (error) { cachePromise = null; throw error; }
+
+    try {
+      await cachePromise;
+    } catch (error) {
+      cachePromise = null;
+      throw error;
+    }
+
     return cachePromise;
   }
 
   async function saveNote(key, subject, text) {
     const value = cleanText(text);
     if (!value) return storeDelete(NOTE_STORE, key);
-    return storePut(NOTE_STORE, {key, subject, text:value, updatedAt:new Date().toISOString()});
+    return storePut(NOTE_STORE, {key, subject, text: value, updatedAt: new Date().toISOString()});
   }
 
   function newCaseId() {
-    return (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   async function createCase(name) {
     const value = cleanText(name);
     if (!value) throw new Error('Nome caso vuoto');
     const now = new Date().toISOString();
-    const record = {id:newCaseId(), account:getAccountScope(), name:value, status:'', createdAt:now, updatedAt:now};
+    const record = {id: newCaseId(), account: getAccountScope(), name: value, status: '', createdAt: now, updatedAt: now};
     await storePut(CASE_STORE, record);
     return record;
   }
 
   async function saveCaseStatus(group, status) {
-    const next = {...group, status:cleanText(status), updatedAt:new Date().toISOString()};
+    const next = {...group, status: cleanText(status), updatedAt: new Date().toISOString()};
     await storePut(CASE_STORE, next);
     return next;
   }
@@ -375,9 +432,7 @@
   async function linkCurrentConversation(groupId, subject) {
     const current = currentConversation(subject);
     const previous = findBySubjectUnique(cache.membersBySubject, subject);
-    if (previous && previous.memberKey !== current.memberKey) {
-      await storeDelete(MEMBER_STORE, previous.memberKey);
-    }
+    if (previous && previous.memberKey !== current.memberKey) await storeDelete(MEMBER_STORE, previous.memberKey);
     await storePut(MEMBER_STORE, {...current, groupId});
   }
 
@@ -402,26 +457,58 @@
     return exact || findBySubjectUnique(cache.membersBySubject, subject);
   }
 
+  function findNoteForMember(member) {
+    return cache.notesByKey.get(member.memberKey) || findBySubjectUnique(cache.notesBySubject, member.subject);
+  }
+
+  function findMemberForNote(note) {
+    return cache.membersByKey.get(note.key) || findBySubjectUnique(cache.membersBySubject, note.subject);
+  }
+
   function renderChip(row, className, text, title) {
     const existing = row.querySelector(`.${className}`);
-    if (!text) { existing?.remove(); return; }
+    if (!text) {
+      existing?.remove();
+      return;
+    }
+
     const host = findRowHost(row);
     if (!host) return;
+
     const chip = existing || document.createElement('span');
     chip.className = className;
     if (chip.textContent !== text) chip.textContent = text;
-    const nextTitle = title || text;
-    if (chip.title !== nextTitle) chip.title = nextTitle;
+    chip.title = title || text;
+
     if (!existing) {
       const actions = host.querySelector(`.${ROW_ACTIONS}`);
-      if (actions) host.insertBefore(chip, actions); else host.appendChild(chip);
+      if (actions) host.insertBefore(chip, actions);
+      else host.appendChild(chip);
     }
+  }
+
+  function makeCopyButton(kind, getSubject) {
+    const isMarkdown = kind === 'markdown';
+    return makeButton(kind, isMarkdown ? 'Copia Gmail Search in Markdown' : 'Copia URL Gmail Search', async () => {
+      const subject = cleanText(getSubject());
+      if (!subject) return showToast('Oggetto email non trovato.', true);
+
+      const search = buildGmailSearch(subject);
+      try {
+        await copyText(isMarkdown ? search.markdown : search.url);
+        showToast(isMarkdown ? 'Markdown copiato' : 'URL Gmail Search copiato');
+      } catch (error) {
+        console.error('[Gmail Superpowers] Clipboard error:', error);
+        showToast('Non riesco a copiare negli appunti.', true);
+      }
+    });
   }
 
   function enhanceMailRow(row) {
     const subject = getRowSubject(row);
     const host = subject && findRowHost(row);
     if (!host) return;
+
     if (!row.querySelector(`.${ROW_ACTIONS}`)) {
       const actions = document.createElement('span');
       actions.className = ROW_ACTIONS;
@@ -431,31 +518,18 @@
     }
   }
 
-  function makeCopyButton(kind, getSubject) {
-    const isMd = kind === 'markdown';
-    return makeButton(kind, isMd ? 'Copia Gmail Search in Markdown' : 'Copia URL Gmail Search', async () => {
-      const subject = cleanText(getSubject());
-      if (!subject) return showToast('Oggetto email non trovato.', true);
-      const search = buildGmailSearch(subject);
-      try {
-        await copyText(isMd ? search.markdown : search.url);
-        showToast(isMd ? 'Markdown copiato' : 'URL Gmail Search copiato');
-      } catch (error) {
-        console.error('[Gmail Superpowers] Clipboard error:', error);
-        showToast('Non riesco a copiare negli appunti.', true);
-      }
-    });
-  }
-
   async function refreshRows(force = false) {
     try {
       await loadCache(force);
+
       for (const row of document.querySelectorAll('tr.zA')) {
         enhanceMailRow(row);
         const subject = getRowSubject(row);
         if (!subject) continue;
+
         const note = findNoteForRow(row, subject);
         renderChip(row, ROW_NOTE, cleanText(note?.text) ? `Stato: ${cleanText(note.text)}` : '', cleanText(note?.text));
+
         const member = findMemberForRow(row, subject);
         const group = member ? cache.casesById.get(member.groupId) : null;
         const caseText = group ? `Caso: ${group.name}${cleanText(group.status) ? ` · ${cleanText(group.status)}` : ''}` : '';
@@ -467,19 +541,24 @@
   }
 
   function enhanceOpenActions() {
-    const subjectEl = findOpenMailSubjectElement();
-    if (!subjectEl) { document.getElementById(OPEN_ACTIONS_ID)?.remove(); return; }
+    const subjectElement = findOpenMailSubjectElement();
+    if (!subjectElement) {
+      document.getElementById(OPEN_ACTIONS_ID)?.remove();
+      return;
+    }
+
     const existing = document.getElementById(OPEN_ACTIONS_ID);
-    if (existing?.previousElementSibling === subjectEl) return;
+    if (existing?.previousElementSibling === subjectElement) return;
     existing?.remove();
+
     const actions = document.createElement('span');
     actions.id = OPEN_ACTIONS_ID;
-    actions.appendChild(makeCopyButton('url', () => cleanText(subjectEl.textContent)));
-    actions.appendChild(makeCopyButton('markdown', () => cleanText(subjectEl.textContent)));
+    actions.appendChild(makeCopyButton('url', () => cleanText(subjectElement.textContent)));
+    actions.appendChild(makeCopyButton('markdown', () => cleanText(subjectElement.textContent)));
     actions.appendChild(makeButton('case', 'Collega questa conversazione a un caso', async () => {
-      await toggleCasePicker(subjectEl);
+      await toggleCasePicker(subjectElement);
     }));
-    subjectEl.insertAdjacentElement('afterend', actions);
+    subjectElement.insertAdjacentElement('afterend', actions);
   }
 
   function createTextInput(placeholder) {
@@ -494,14 +573,18 @@
     return input;
   }
 
-  function getOpenSubjectHost(subjectEl) {
-    return subjectEl.closest('.ha') || subjectEl.parentElement;
+  function getOpenSubjectHost(subjectElement) {
+    return subjectElement.closest('.ha') || subjectElement.parentElement;
   }
 
   async function enhanceOpenNote() {
-    const subjectEl = findOpenMailSubjectElement();
-    if (!subjectEl) { document.getElementById(NOTE_PANEL_ID)?.remove(); return; }
-    const subject = cleanText(subjectEl.textContent);
+    const subjectElement = findOpenMailSubjectElement();
+    if (!subjectElement) {
+      document.getElementById(NOTE_PANEL_ID)?.remove();
+      return;
+    }
+
+    const subject = cleanText(subjectElement.textContent);
     const key = buildEntityKey(subject);
     const existing = document.getElementById(NOTE_PANEL_ID);
     if (existing?.dataset.key === key) return;
@@ -510,20 +593,23 @@
     const panel = document.createElement('div');
     panel.id = NOTE_PANEL_ID;
     panel.dataset.key = key;
+
     const label = document.createElement('span');
     label.className = 'gsp-label';
     label.textContent = 'Stato';
+
     const input = createTextInput('Es. Aspetto risposta da X e Y');
     input.dataset.saved = '';
 
     async function persist(showMessage) {
       const value = cleanText(input.value);
       if (value === (input.dataset.saved || '')) return;
+
       try {
         await saveNote(key, subject, value);
         input.value = value;
         input.dataset.saved = value;
-        deleteBtn.disabled = !value;
+        deleteButton.disabled = !value;
         invalidateCache();
         void refreshRows(true);
         if (showMessage) showToast(value ? 'Stato salvato' : 'Stato eliminato');
@@ -533,34 +619,44 @@
       }
     }
 
-    const saveBtn = makeButton('save', 'Salva stato', () => persist(true));
-    const deleteBtn = makeButton('trash', 'Cancella stato', async () => {
+    const saveButton = makeButton('save', 'Salva stato', () => persist(true));
+    const deleteButton = makeButton('trash', 'Cancella stato', async () => {
       await storeDelete(NOTE_STORE, key);
       input.value = '';
       input.dataset.saved = '';
-      deleteBtn.disabled = true;
+      deleteButton.disabled = true;
       invalidateCache();
       void refreshRows(true);
       showToast('Stato eliminato');
     });
-    deleteBtn.disabled = true;
+    deleteButton.disabled = true;
+
     input.addEventListener('keydown', async (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); await persist(true); input.blur(); }
-      if (event.key === 'Escape') { event.preventDefault(); input.value = input.dataset.saved || ''; input.blur(); }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        await persist(true);
+        input.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        input.value = input.dataset.saved || '';
+        input.blur();
+      }
     });
     input.addEventListener('blur', () => persist(false));
-    panel.append(label, input, saveBtn, deleteBtn);
-    const host = getOpenSubjectHost(subjectEl);
+
+    panel.append(label, input, saveButton, deleteButton);
+    const host = getOpenSubjectHost(subjectElement);
     if (!host) return;
     host.insertAdjacentElement('afterend', panel);
+
     try {
       const record = await storeGet(NOTE_STORE, key);
       if (!document.contains(panel)) return;
       const value = cleanText(record?.text);
       input.value = value;
       input.dataset.saved = value;
-      deleteBtn.disabled = !value;
+      deleteButton.disabled = !value;
     } catch (error) {
       console.error('[Gmail Superpowers] Note load error:', error);
     }
@@ -571,28 +667,37 @@
   }
 
   async function enhanceCasePanel(force = false) {
-    const subjectEl = findOpenMailSubjectElement();
-    if (!subjectEl) {
+    const subjectElement = findOpenMailSubjectElement();
+    if (!subjectElement) {
       document.getElementById(CASE_PANEL_ID)?.remove();
       document.getElementById(CASE_PICKER_ID)?.remove();
       return;
     }
-    const subject = cleanText(subjectEl.textContent);
+
+    const subject = cleanText(subjectElement.textContent);
     const memberKey = buildEntityKey(subject);
     await loadCache(force);
+
     const membership = cache.membersByKey.get(memberKey) || findBySubjectUnique(cache.membersBySubject, subject);
     const group = membership ? cache.casesById.get(membership.groupId) : null;
     const existing = document.getElementById(CASE_PANEL_ID);
-    if (!group) { existing?.remove(); return; }
+
+    if (!group) {
+      existing?.remove();
+      return;
+    }
+
     if (existing?.dataset.groupId === group.id && !force) return;
     existing?.remove();
 
     const panel = document.createElement('div');
     panel.id = CASE_PANEL_ID;
     panel.dataset.groupId = group.id;
+
     const title = document.createElement('span');
     title.className = 'gsp-case-title';
     title.textContent = `Caso: ${group.name}`;
+
     const status = createTextInput('Stato del caso');
     status.classList.add('gsp-case-status');
     status.value = cleanText(group.status);
@@ -601,6 +706,7 @@
     async function persistStatus(showMessage) {
       const value = cleanText(status.value);
       if (value === (status.dataset.saved || '')) return;
+
       try {
         const updated = await saveCaseStatus(group, value);
         status.value = updated.status;
@@ -616,13 +722,20 @@
 
     status.addEventListener('keydown', async (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); await persistStatus(true); status.blur(); }
-      if (event.key === 'Escape') { event.preventDefault(); status.value = status.dataset.saved || ''; status.blur(); }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        await persistStatus(true);
+        status.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        status.value = status.dataset.saved || '';
+        status.blur();
+      }
     });
     status.addEventListener('blur', () => persistStatus(false));
 
-    const manageBtn = makeButton('case', 'Cambia caso', () => toggleCasePicker(subjectEl, true));
-    const unlinkBtn = makeButton('close', 'Scollega questa conversazione dal caso', async () => {
+    const manageButton = makeButton('case', 'Cambia caso', () => toggleCasePicker(subjectElement, true));
+    const unlinkButton = makeButton('close', 'Scollega questa conversazione dal caso', async () => {
       try {
         await unlinkMembership(membership.memberKey);
         invalidateCache();
@@ -634,36 +747,42 @@
         showToast('Non riesco a scollegare la conversazione.', true);
       }
     });
-    panel.append(title, status, manageBtn, unlinkBtn);
+
+    panel.append(title, status, manageButton, unlinkButton);
 
     const members = document.createElement('ul');
     members.className = 'gsp-members';
     for (const member of cache.membersByCase.get(group.id) || []) {
-      const li = document.createElement('li');
+      const item = document.createElement('li');
       const link = document.createElement('a');
       link.href = memberNavigationUrl(member);
       link.textContent = member.subject || 'Conversazione';
       link.title = member.subject || '';
       if (member.memberKey === memberKey) link.textContent += ' (questa)';
-      li.appendChild(link);
-      members.appendChild(li);
+      item.appendChild(link);
+      members.appendChild(item);
     }
     panel.appendChild(members);
 
     const notePanel = document.getElementById(NOTE_PANEL_ID);
-    const host = notePanel || getOpenSubjectHost(subjectEl);
+    const host = notePanel || getOpenSubjectHost(subjectElement);
     if (host) host.insertAdjacentElement('afterend', panel);
   }
 
-  async function toggleCasePicker(subjectEl, forceOpen = false) {
+  async function toggleCasePicker(subjectElement, forceOpen = false) {
     const existing = document.getElementById(CASE_PICKER_ID);
-    if (existing && !forceOpen) { existing.remove(); return; }
+    if (existing && !forceOpen) {
+      existing.remove();
+      return;
+    }
     existing?.remove();
-    const subject = cleanText(subjectEl.textContent);
+
+    const subject = cleanText(subjectElement.textContent);
     await loadCache();
 
     const picker = document.createElement('div');
     picker.id = CASE_PICKER_ID;
+
     const label = document.createElement('span');
     label.className = 'gsp-label';
     label.textContent = 'Collega a caso';
@@ -671,13 +790,15 @@
 
     const list = document.createElement('div');
     list.className = 'gsp-picker-list';
-    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name));
+    const groups = [...cache.casesById.values()].sort((a, b) => a.name.localeCompare(b.name));
+
     if (!groups.length) {
       const muted = document.createElement('div');
       muted.className = 'gsp-muted';
       muted.textContent = 'Nessun caso esistente. Creane uno qui sotto.';
       list.appendChild(muted);
     }
+
     for (const group of groups) {
       const choice = document.createElement('button');
       choice.type = 'button';
@@ -703,9 +824,13 @@
     const newRow = document.createElement('div');
     newRow.className = 'gsp-picker-new';
     const input = createTextInput('Nuovo caso, es. Preventivo Rossi');
-    const addBtn = makeButton('save', 'Crea caso e collega', async () => {
+    const addButton = makeButton('save', 'Crea caso e collega', async () => {
       const name = cleanText(input.value);
-      if (!name) { input.focus(); return; }
+      if (!name) {
+        input.focus();
+        return;
+      }
+
       try {
         const group = await createCase(name);
         await linkCurrentConversation(group.id, subject);
@@ -718,21 +843,146 @@
         showToast('Non riesco a creare il caso.', true);
       }
     });
-    input.addEventListener('keydown', async (event) => {
+
+    input.addEventListener('keydown', (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); addBtn.click(); }
-      if (event.key === 'Escape') { event.preventDefault(); picker.remove(); }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addButton.click();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        picker.remove();
+      }
     });
-    newRow.append(input, addBtn);
+
+    newRow.append(input, addButton);
     picker.appendChild(newRow);
 
-    const panel = document.getElementById(CASE_PANEL_ID) || document.getElementById(NOTE_PANEL_ID) || getOpenSubjectHost(subjectEl);
+    const panel = document.getElementById(CASE_PANEL_ID) || document.getElementById(NOTE_PANEL_ID) || getOpenSubjectHost(subjectElement);
     if (panel) panel.insertAdjacentElement('afterend', picker);
     input.focus();
   }
 
+  function buildMarkdownExport() {
+    const lines = [];
+    const groups = [...cache.casesById.values()].sort((a, b) => a.name.localeCompare(b.name, 'it'));
+
+    lines.push('# Gmail Superpowers');
+    lines.push('');
+    lines.push(`Esportato: ${new Date().toLocaleString('it-IT')}`);
+    lines.push('');
+    lines.push('## Casi');
+    lines.push('');
+
+    if (!groups.length) {
+      lines.push('_Nessun caso._');
+      lines.push('');
+    }
+
+    for (const group of groups) {
+      lines.push(`### ${escapeMarkdownText(group.name)}`);
+      lines.push('');
+      lines.push(`Stato: ${cleanText(group.status) ? escapeMarkdownText(group.status) : '—'}`);
+      lines.push('');
+      lines.push('Conversazioni:');
+
+      const members = [...(cache.membersByCase.get(group.id) || [])]
+        .sort((a, b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+
+      if (!members.length) {
+        lines.push('- _Nessuna conversazione collegata_');
+      }
+
+      for (const member of members) {
+        const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
+        lines.push(`- ${buildGmailSearch(subject).markdown}`);
+
+        const note = findNoteForMember(member);
+        if (cleanText(note?.text)) {
+          lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
+        }
+      }
+
+      lines.push('');
+    }
+
+    const ungroupedNotes = [...cache.notesByKey.values()]
+      .filter((note) => {
+        const member = findMemberForNote(note);
+        return !member || !cache.casesById.has(member.groupId);
+      })
+      .sort((a, b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+
+    lines.push('## Conversazioni con stato senza caso');
+    lines.push('');
+
+    if (!ungroupedNotes.length) {
+      lines.push('_Nessuna._');
+    } else {
+      for (const note of ungroupedNotes) {
+        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
+        lines.push(`- ${buildGmailSearch(subject).markdown}`);
+        lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
+      }
+    }
+
+    lines.push('');
+    return `${lines.join('\n').trim()}\n`;
+  }
+
+  function downloadMarkdown(markdown) {
+    const date = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([markdown], {type: 'text/markdown;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `gmail-superpowers-${date}.md`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function exportMarkdown() {
+    try {
+      await loadCache(true);
+      const markdown = buildMarkdownExport();
+      downloadMarkdown(markdown);
+      showToast('Export Markdown creato');
+    } catch (error) {
+      console.error('[Gmail Superpowers] Export error:', error);
+      showToast('Non riesco a esportare i dati.', true);
+    }
+  }
+
+  function ensureExportButton() {
+    if (document.getElementById(EXPORT_BUTTON_ID)) return;
+
+    const button = document.createElement('button');
+    button.id = EXPORT_BUTTON_ID;
+    button.type = 'button';
+    button.title = 'Esporta casi, stati e conversazioni in Markdown';
+    button.setAttribute('aria-label', button.title);
+    button.appendChild(createSvgIcon('download'));
+
+    const label = document.createElement('span');
+    label.textContent = 'Export MD';
+    button.appendChild(label);
+
+    button.addEventListener('pointerdown', stopPropagationOnly, true);
+    button.addEventListener('mousedown', stopPropagationOnly, true);
+    button.addEventListener('click', async (event) => {
+      stopAction(event);
+      await exportMarkdown();
+    }, true);
+
+    document.body.appendChild(button);
+  }
+
   async function refreshAll(force = false) {
     injectStyles();
+    ensureExportButton();
     document.querySelectorAll('tr.zA').forEach(enhanceMailRow);
     await refreshRows(force);
     enhanceOpenActions();
@@ -749,7 +999,7 @@
   }
 
   const observer = new MutationObserver(scheduleRefresh);
-  observer.observe(document.documentElement, {childList:true, subtree:true});
+  observer.observe(document.documentElement, {childList: true, subtree: true});
   window.addEventListener('hashchange', scheduleRefresh);
   window.addEventListener('popstate', scheduleRefresh);
   scheduleRefresh();
