@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.6.0
-// @description  Portable Gmail links, local statuses, deadlines, cases, admin dashboard, and Markdown export.
+// @version      0.6.1
+// @description  Portable Gmail links, local statuses, deadlines, cases with latest-email dates, admin dashboard, and Markdown export.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_setClipboard
@@ -155,6 +155,32 @@
     return subject ? (subject.closest('.y6') || subject.parentElement) : null;
   }
 
+  function getDateLabel(element) {
+    if (!element) return '';
+    return cleanText(element.getAttribute('title') || element.getAttribute('data-tooltip') || element.getAttribute('aria-label') || element.textContent);
+  }
+
+  function getOpenLastEmailDateLabel() {
+    const nodes = [];
+    const seen = new Set();
+    for (const selector of ['.adn .g3', '.h7 .g3', '[role="main"] .g3']) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        nodes.push(element);
+      }
+    }
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const label = getDateLabel(nodes[i]);
+      if (label) return label;
+    }
+    return '';
+  }
+
+  function getRowLastEmailDateLabel(row) {
+    return getDateLabel(row.querySelector('td.xW span[title], .xW span[title], td.xW span, .xW span'));
+  }
+
   function createSvgIcon(kind) {
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
@@ -184,7 +210,7 @@
       #${NOTE_PANEL_ID},#${DUE_PANEL_ID},#${CASE_PANEL_ID},#${CASE_PICKER_ID}{display:flex;align-items:center;gap:6px;margin:6px 0 10px;min-height:34px;max-width:820px;position:relative;z-index:20;font-family:Arial,sans-serif}
       #${CASE_PANEL_ID},#${CASE_PICKER_ID}{align-items:flex-start;padding:8px 10px;border:1px solid #dadce0;border-radius:10px;background:#fff;flex-wrap:wrap}
       .gsp-label{flex:0 0 auto;font-size:12px;font-weight:600;color:#5f6368;line-height:32px}.gsp-input{flex:1 1 auto;min-width:140px;height:32px;padding:5px 10px;border:1px solid #dadce0;border-radius:8px;outline:none;background:#fff;color:#202124;font:13px/20px Arial,sans-serif;box-sizing:border-box;pointer-events:auto!important}.gsp-input:focus{border-color:#1a73e8;box-shadow:0 0 0 1px #1a73e8}.gsp-date-input{flex:0 0 170px}
-      .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}
+      .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}.gsp-last-email{color:#5f6368}
       .gsp-picker-list{display:flex;flex-wrap:wrap;gap:6px;width:100%}.gsp-case-choice{border:1px solid #dadce0;border-radius:14px;background:#fff;padding:4px 9px;font:12px Arial,sans-serif;cursor:pointer}.gsp-case-choice:hover{background:#f1f3f4}.gsp-picker-new{display:flex;gap:6px;width:100%;align-items:center}.gsp-picker-new .gsp-input{max-width:420px}.gsp-muted{font:11px/16px Arial,sans-serif;color:#80868b;width:100%}
       #${GLOBAL_TOOLS_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;font-family:Arial,sans-serif;pointer-events:auto!important}.gsp-global-btn{height:36px;padding:0 14px 0 10px;border:1px solid #dadce0;border-radius:19px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:7px;font:12px Arial,sans-serif}.gsp-global-btn:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}.gsp-global-btn svg{width:18px;height:18px;fill:currentColor;pointer-events:none}
     `;
@@ -357,7 +383,15 @@
 
   function currentConversation(subject) {
     const threadId = getOpenThreadId();
-    return {memberKey:buildEntityKey(subject, threadId), account:getAccountScope(), threadId, subject, url:location.href, updatedAt:new Date().toISOString()};
+    return {
+      memberKey:buildEntityKey(subject, threadId),
+      account:getAccountScope(),
+      threadId,
+      subject,
+      url:location.href,
+      lastEmailDate:getOpenLastEmailDateLabel(),
+      updatedAt:new Date().toISOString()
+    };
   }
 
   async function linkCurrentConversation(groupId, subject) {
@@ -395,6 +429,17 @@
   function findNoteForMember(member) { return findNoteForKey(member.memberKey, member.subject); }
   function findDeadlineForMember(member) { return findDeadlineForKey(member.memberKey, member.subject); }
   function findMemberForNote(note) { return findMemberForKey(note.key, note.subject); }
+
+  async function syncCurrentMembershipLastEmail(membership) {
+    if (!membership) return membership;
+    const lastEmailDate = getOpenLastEmailDateLabel();
+    if (!lastEmailDate || cleanText(membership.lastEmailDate) === lastEmailDate) return membership;
+    const updated = {...membership, lastEmailDate, updatedAt:new Date().toISOString()};
+    await storePut(MEMBER_STORE, updated);
+    invalidateCache();
+    await loadCache(true);
+    return cache.membersByKey.get(updated.memberKey) || updated;
+  }
 
   function localDateIso(date = new Date()) {
     const y = date.getFullYear();
@@ -466,6 +511,13 @@
         const due = cleanText(deadline?.dueDate);
         renderChip(row, ROW_DUE, due ? `Scade: ${formatDate(due)}` : '', due ? `Scadenza: ${formatDate(due)}` : '', due ? `gsp-due-${dueClass(due)}` : '');
         const member = findMemberForRow(row, subject); const group = member ? cache.casesById.get(member.groupId) : null;
+        if (member && !cleanText(member.lastEmailDate)) {
+          const rowLastEmailDate = getRowLastEmailDateLabel(row);
+          if (rowLastEmailDate) {
+            member.lastEmailDate = rowLastEmailDate;
+            void storePut(MEMBER_STORE, {...member, lastEmailDate:rowLastEmailDate, updatedAt:new Date().toISOString()}).catch((error) => console.debug('[Gmail Superpowers] Last email backfill error:', error));
+          }
+        }
         const caseText = group ? `Caso: ${group.name}${cleanText(group.status) ? ` · ${cleanText(group.status)}` : ''}` : '';
         renderChip(row, ROW_CASE, caseText, caseText);
       }
@@ -551,7 +603,8 @@
     const subjectElement = findOpenMailSubjectElement();
     if (!subjectElement) { document.getElementById(CASE_PANEL_ID)?.remove(); document.getElementById(CASE_PICKER_ID)?.remove(); return; }
     const subject = cleanText(subjectElement.textContent); const memberKey = buildEntityKey(subject); await loadCache(force);
-    const membership = cache.membersByKey.get(memberKey) || findBySubjectUnique(cache.membersBySubject, subject);
+    let membership = cache.membersByKey.get(memberKey) || findBySubjectUnique(cache.membersBySubject, subject);
+    membership = await syncCurrentMembershipLastEmail(membership);
     const group = membership ? cache.casesById.get(membership.groupId) : null;
     const existing = document.getElementById(CASE_PANEL_ID);
     if (!group) { existing?.remove(); return; }
@@ -574,7 +627,11 @@
     panel.append(title,status,manageButton,unlinkButton);
     const members=document.createElement('ul'); members.className='gsp-members';
     for (const member of cache.membersByCase.get(group.id) || []) {
-      const item=document.createElement('li'); const link=document.createElement('a'); link.href=memberNavigationUrl(member); link.textContent=member.subject || 'Conversazione'; link.title=member.subject || ''; if (member.memberKey===membership.memberKey) link.textContent += ' (questa)'; item.appendChild(link);
+      const item=document.createElement('li');
+      const link=document.createElement('a'); link.href=memberNavigationUrl(member); link.textContent=member.subject || 'Conversazione'; link.title=member.subject || ''; if (member.memberKey===membership.memberKey) link.textContent += ' (questa)'; item.appendChild(link);
+      if (cleanText(member.lastEmailDate)) {
+        const last=document.createElement('span'); last.className='gsp-last-email'; last.textContent=` · ultima email ${cleanText(member.lastEmailDate)}`; item.appendChild(last);
+      }
       const due=findDeadlineForMember(member); if (due?.dueDate) item.appendChild(document.createTextNode(` · scade ${formatDate(due.dueDate)}`));
       members.appendChild(item);
     }
@@ -618,7 +675,14 @@
       lines.push(`### ${escapeMarkdownText(group.name)}`,'',`Stato: ${cleanText(group.status)?escapeMarkdownText(group.status):'—'}`,'','Conversazioni:');
       const members=[...(cache.membersByCase.get(group.id)||[])].sort((a,b)=>cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
       if(!members.length) lines.push('- _Nessuna conversazione collegata_');
-      for(const member of members){ const subject=cleanText(member.subject)||'Conversazione senza oggetto'; lines.push(`- ${buildGmailSearch(subject).markdown}`); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(cleanText(note?.text)) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`); if(due?.dueDate) lines.push(`  - Scadenza: ${due.dueDate}`); }
+      for(const member of members){
+        const subject=cleanText(member.subject)||'Conversazione senza oggetto';
+        lines.push(`- ${buildGmailSearch(subject).markdown}`);
+        if(cleanText(member.lastEmailDate)) lines.push(`  - Ultima email: ${escapeMarkdownText(member.lastEmailDate)}`);
+        const note=findNoteForMember(member); const due=findDeadlineForMember(member);
+        if(cleanText(note?.text)) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
+        if(due?.dueDate) lines.push(`  - Scadenza: ${due.dueDate}`);
+      }
       lines.push('');
     }
     lines.push('## Conversazioni con stato senza caso',''); const ungrouped=getUngroupedNotes();
@@ -702,7 +766,14 @@
       const card=adminEl('section','card case-card'); card.appendChild(adminEl('h3','',group.name)); const status=document.createElement('input'); status.type='text'; status.className='case-status'; status.value=cleanText(group.status); status.placeholder='Stato del caso'; status.addEventListener('change',async()=>{await saveCaseStatus(group,status.value);invalidateCache();}); card.appendChild(status);
       const list=adminEl('ul','members'); const members=[...(cache.membersByCase.get(group.id)||[])].sort((a,b)=>cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
       if(!members.length) list.appendChild(adminEl('li','muted','Nessuna conversazione collegata.'));
-      for(const member of members){ const li=adminEl('li'); li.appendChild(aLink(member.subject)); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`)); if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text))); list.appendChild(li); }
+      for(const member of members){
+        const li=adminEl('li'); li.appendChild(aLink(member.subject));
+        if(cleanText(member.lastEmailDate)) li.appendChild(adminEl('span','badge',`Ultima email ${cleanText(member.lastEmailDate)}`));
+        const note=findNoteForMember(member); const due=findDeadlineForMember(member);
+        if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`));
+        if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text)));
+        list.appendChild(li);
+      }
       card.appendChild(list); main.appendChild(card);
     }
   }
@@ -722,7 +793,18 @@
     const preview=adminEl('div','export-preview'); const groups=[...cache.casesById.values()].sort((a,b)=>a.name.localeCompare(b.name,'it'));
     preview.appendChild(adminEl('h2','','Casi'));
     if(!groups.length) preview.appendChild(adminEl('div','muted','Nessun caso.'));
-    for(const group of groups){ preview.appendChild(adminEl('h3','',group.name)); preview.appendChild(adminEl('div','status',`Stato: ${cleanText(group.status)||'—'}`)); const ul=adminEl('ul'); for(const member of cache.membersByCase.get(group.id)||[]){ const li=adminEl('li'); li.appendChild(aLink(member.subject)); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text))); if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`)); ul.appendChild(li); } preview.appendChild(ul); }
+    for(const group of groups){
+      preview.appendChild(adminEl('h3','',group.name)); preview.appendChild(adminEl('div','status',`Stato: ${cleanText(group.status)||'—'}`)); const ul=adminEl('ul');
+      for(const member of cache.membersByCase.get(group.id)||[]){
+        const li=adminEl('li'); li.appendChild(aLink(member.subject));
+        if(cleanText(member.lastEmailDate)) li.appendChild(adminEl('span','badge',`Ultima email ${cleanText(member.lastEmailDate)}`));
+        const note=findNoteForMember(member); const due=findDeadlineForMember(member);
+        if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text)));
+        if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`));
+        ul.appendChild(li);
+      }
+      preview.appendChild(ul);
+    }
     preview.appendChild(adminEl('h2','','Scadenze')); const dueList=adminEl('ul'); for(const due of allDeadlinesSorted()){ const li=adminEl('li'); li.appendChild(adminEl('span',`date-${dueClass(due.dueDate)}`,`${formatDate(due.dueDate)} — `)); li.appendChild(aLink(due.subject)); dueList.appendChild(li); } if(!dueList.childNodes.length) dueList.appendChild(adminEl('li','muted','Nessuna scadenza.')); preview.appendChild(dueList); main.appendChild(preview);
   }
 
