@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.2.0
+// @version      0.2.1
 // @description  Copy a portable Gmail subject search as URL or Markdown from message rows and opened emails.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -9,7 +9,7 @@
 // @run-at       document-idle
 // @homepageURL  https://github.com/menteora/gmail-superpowers
 // @supportURL   https://github.com/menteora/gmail-superpowers/issues
-// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
+// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.meta.js
 // @downloadURL  https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
 // ==/UserScript==
 
@@ -253,8 +253,6 @@
     const subject = row.querySelector('span.bog');
     if (!subject) return null;
 
-    // .y6 is the subject/snippet area in Gmail's list view and is the safest
-    // place to keep the controls visually attached to the individual email.
     return subject.closest('.y6') || subject.parentElement;
   }
 
