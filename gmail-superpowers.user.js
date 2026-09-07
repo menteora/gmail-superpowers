@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.5.0
-// @description  Portable Gmail links, local status notes, cases, and Markdown export.
+// @version      0.5.1
+// @description  Portable Gmail links, local status notes, cases, Markdown export, and HTML preview.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_setClipboard
@@ -23,7 +23,8 @@
   const NOTE_PANEL_ID = 'gmail-superpowers-note-panel';
   const CASE_PANEL_ID = 'gmail-superpowers-case-panel';
   const CASE_PICKER_ID = 'gmail-superpowers-case-picker';
-  const EXPORT_BUTTON_ID = 'gmail-superpowers-export';
+  const GLOBAL_TOOLS_ID = 'gmail-superpowers-global-tools';
+  const PREVIEW_MODAL_ID = 'gmail-superpowers-preview-modal';
   const TOAST_ID = 'gmail-superpowers-toast';
   const STYLE_ID = 'gmail-superpowers-style';
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -55,7 +56,8 @@
       'M10.2 8.3 14 12.1l-1.4 1.4-3.8-3.8 1.4-1.4Z'
     ],
     close: ['M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z'],
-    download: ['M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z']
+    download: ['M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z'],
+    preview: ['M12 5c5.5 0 9.5 5.2 10.6 6.8a.4.4 0 0 1 0 .4C21.5 13.8 17.5 19 12 19S2.5 13.8 1.4 12.2a.4.4 0 0 1 0-.4C2.5 10.2 6.5 5 12 5Zm0 2c-3.8 0-6.9 3.2-8.5 5 1.6 1.8 4.7 5 8.5 5s6.9-3.2 8.5-5C18.9 10.2 15.8 7 12 7Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Zm0 2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z']
   };
 
   function emptyCache() {
@@ -97,7 +99,6 @@
 
   function getRowThreadId(row) {
     const attrs = ['data-legacy-thread-id', 'data-thread-id', 'data-thread-perm-id'];
-
     for (const name of attrs) {
       const value = row.getAttribute(name);
       if (isLikelyThreadId(value)) return value.replace(/^#/, '');
@@ -118,7 +119,6 @@
       const candidate = parts[parts.length - 1] || '';
       if (isLikelyThreadId(candidate)) return candidate.replace(/^#/, '');
     }
-
     return '';
   }
 
@@ -152,19 +152,16 @@
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('focusable', 'false');
-
     for (const d of ICON_PATHS[kind] || []) {
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('d', d);
       svg.appendChild(path);
     }
-
     return svg;
   }
 
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
-
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
@@ -182,12 +179,18 @@
       .gsp-label{flex:0 0 auto;font-size:12px;font-weight:600;color:#5f6368;line-height:32px}
       .gsp-input{flex:1 1 auto;min-width:140px;height:32px;padding:5px 10px;border:1px solid #dadce0;border-radius:8px;outline:none;background:#fff;color:#202124;font:13px/20px Arial,sans-serif;box-sizing:border-box;pointer-events:auto!important}
       .gsp-input:focus{border-color:#1a73e8;box-shadow:0 0 0 1px #1a73e8}
-      .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}
+      .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}
       .gsp-picker-list{display:flex;flex-wrap:wrap;gap:6px;width:100%}.gsp-case-choice{border:1px solid #dadce0;border-radius:14px;background:#fff;padding:4px 9px;font:12px Arial,sans-serif;cursor:pointer}.gsp-case-choice:hover{background:#f1f3f4}
       .gsp-picker-new{display:flex;gap:6px;width:100%;align-items:center}.gsp-picker-new .gsp-input{max-width:420px}.gsp-muted{font:11px/16px Arial,sans-serif;color:#80868b;width:100%}
-      #${EXPORT_BUTTON_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;height:34px;padding:0 12px 0 9px;border:1px solid #dadce0;border-radius:18px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:6px;font:12px Arial,sans-serif;pointer-events:auto!important}
-      #${EXPORT_BUTTON_ID}:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}
-      #${EXPORT_BUTTON_ID} svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
+      #${GLOBAL_TOOLS_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;display:flex;align-items:center;gap:8px;font-family:Arial,sans-serif;pointer-events:auto!important}
+      .gsp-global-btn{height:34px;padding:0 12px 0 9px;border:1px solid #dadce0;border-radius:18px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:6px;font:12px Arial,sans-serif}
+      .gsp-global-btn:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}.gsp-global-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
+      #${PREVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483645;background:rgba(32,33,36,.52);display:flex;align-items:center;justify-content:center;padding:28px;box-sizing:border-box;font-family:Arial,sans-serif;pointer-events:auto!important}
+      .gsp-preview-dialog{width:min(900px,96vw);height:min(820px,92vh);background:#fff;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.35);display:flex;flex-direction:column;overflow:hidden;color:#202124}
+      .gsp-preview-header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #e0e0e0}.gsp-preview-title{font-size:18px;font-weight:600;flex:1}.gsp-preview-meta{font-size:11px;color:#80868b}
+      .gsp-preview-action{height:32px;border:1px solid #dadce0;border-radius:16px;background:#fff;padding:0 11px;cursor:pointer;color:#3c4043;font:12px Arial,sans-serif}.gsp-preview-action:hover{background:#f1f3f4}
+      .gsp-preview-close{width:32px;height:32px;border:0;border-radius:50%;background:transparent;cursor:pointer;font-size:22px;line-height:30px;color:#5f6368}.gsp-preview-close:hover{background:#f1f3f4}
+      .gsp-preview-body{padding:22px 28px 40px;overflow:auto;font-size:14px;line-height:1.5}.gsp-preview-body h2{font-size:20px;margin:24px 0 12px}.gsp-preview-body h2:first-child{margin-top:0}.gsp-preview-case{border:1px solid #e0e0e0;border-radius:10px;padding:14px 16px;margin:0 0 14px;background:#fff}.gsp-preview-case h3{font-size:16px;margin:0 0 8px}.gsp-preview-status{margin:0 0 10px;color:#3c4043}.gsp-preview-status strong{color:#202124}.gsp-preview-list{margin:4px 0 0;padding-left:22px}.gsp-preview-list li{margin:5px 0}.gsp-preview-list a{color:#1a73e8;text-decoration:none}.gsp-preview-list a:hover{text-decoration:underline}.gsp-preview-note{display:block;color:#5f6368;font-size:12px;margin-top:2px}.gsp-preview-empty{color:#80868b;font-style:italic}
     `;
     document.head.appendChild(style);
   }
@@ -228,23 +231,18 @@
   }
 
   function escapeMarkdownText(value) {
-    return cleanText(value)
-      .replace(/\\/g, '\\\\')
-      .replace(/([*_`#])/g, '\\$1')
-      .replace(/\[/g, '\\[')
-      .replace(/\]/g, '\\]');
+    return cleanText(value).replace(/\\/g, '\\\\').replace(/([*_`#])/g, '\\$1').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
   }
 
   function buildGmailSearch(subject) {
     const query = `subject:"${escapeGmailSearchValue(subject)}"`;
     const url = `https://mail.google.com/mail/#search/${encodeURIComponent(query)}`;
-    return { url, markdown: `[email: ${escapeMarkdownLabel(subject)}](${url})` };
+    return {url, markdown: `[email: ${escapeMarkdownLabel(subject)}](${url})`};
   }
 
   async function copyText(text) {
     if (typeof GM_setClipboard === 'function') return GM_setClipboard(text, 'text');
     if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-
     const textarea = document.createElement('textarea');
     textarea.value = text;
     textarea.style.position = 'fixed';
@@ -258,22 +256,12 @@
 
   function showToast(message, isError = false) {
     document.getElementById(TOAST_ID)?.remove();
-
     const toast = document.createElement('div');
     toast.id = TOAST_ID;
     toast.textContent = message;
     Object.assign(toast.style, {
-      position: 'fixed',
-      right: '24px',
-      bottom: '70px',
-      zIndex: '2147483647',
-      maxWidth: '440px',
-      padding: '10px 14px',
-      borderRadius: '8px',
-      background: isError ? '#b3261e' : '#202124',
-      color: '#fff',
-      font: '13px/1.4 Arial,sans-serif',
-      boxShadow: '0 4px 18px rgba(0,0,0,.25)'
+      position:'fixed',right:'24px',bottom:'70px',zIndex:'2147483647',maxWidth:'440px',padding:'10px 14px',borderRadius:'8px',
+      background:isError?'#b3261e':'#202124',color:'#fff',font:'13px/1.4 Arial,sans-serif',boxShadow:'0 4px 18px rgba(0,0,0,.25)'
     });
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 2200);
@@ -281,28 +269,23 @@
 
   function openDatabase() {
     if (dbPromise) return dbPromise;
-
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
-
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, {keyPath: 'key'});
-        if (!db.objectStoreNames.contains(CASE_STORE)) db.createObjectStore(CASE_STORE, {keyPath: 'id'});
-
+        if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, {keyPath:'key'});
+        if (!db.objectStoreNames.contains(CASE_STORE)) db.createObjectStore(CASE_STORE, {keyPath:'id'});
         if (!db.objectStoreNames.contains(MEMBER_STORE)) {
-          const store = db.createObjectStore(MEMBER_STORE, {keyPath: 'memberKey'});
-          store.createIndex('groupId', 'groupId', {unique: false});
+          const store = db.createObjectStore(MEMBER_STORE, {keyPath:'memberKey'});
+          store.createIndex('groupId', 'groupId', {unique:false});
         } else {
           const store = request.transaction.objectStore(MEMBER_STORE);
-          if (!store.indexNames.contains('groupId')) store.createIndex('groupId', 'groupId', {unique: false});
+          if (!store.indexNames.contains('groupId')) store.createIndex('groupId', 'groupId', {unique:false});
         }
       };
-
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('IndexedDB non disponibile'));
     });
-
     return dbPromise;
   }
 
@@ -349,14 +332,8 @@
   async function loadCache(force = false) {
     if (force) invalidateCache();
     if (cachePromise) return cachePromise;
-
     cachePromise = (async () => {
-      const [notes, cases, members] = await Promise.all([
-        storeGetAll(NOTE_STORE),
-        storeGetAll(CASE_STORE),
-        storeGetAll(MEMBER_STORE)
-      ]);
-
+      const [notes, cases, members] = await Promise.all([storeGetAll(NOTE_STORE), storeGetAll(CASE_STORE), storeGetAll(MEMBER_STORE)]);
       const account = getAccountScope();
       const next = emptyCache();
 
@@ -366,11 +343,9 @@
         const subject = normalizeSubject(record.subject);
         if (subject) next.notesBySubject.set(subject, [...(next.notesBySubject.get(subject) || []), record]);
       }
-
       for (const record of cases) {
         if (record?.account === account) next.casesById.set(record.id, record);
       }
-
       for (const record of members) {
         if (record?.account !== account) continue;
         next.membersByKey.set(record.memberKey, record);
@@ -378,24 +353,16 @@
         if (subject) next.membersBySubject.set(subject, [...(next.membersBySubject.get(subject) || []), record]);
         next.membersByCase.set(record.groupId, [...(next.membersByCase.get(record.groupId) || []), record]);
       }
-
       cache = next;
     })();
-
-    try {
-      await cachePromise;
-    } catch (error) {
-      cachePromise = null;
-      throw error;
-    }
-
+    try { await cachePromise; } catch (error) { cachePromise = null; throw error; }
     return cachePromise;
   }
 
   async function saveNote(key, subject, text) {
     const value = cleanText(text);
     if (!value) return storeDelete(NOTE_STORE, key);
-    return storePut(NOTE_STORE, {key, subject, text: value, updatedAt: new Date().toISOString()});
+    return storePut(NOTE_STORE, {key, subject, text:value, updatedAt:new Date().toISOString()});
   }
 
   function newCaseId() {
@@ -406,27 +373,20 @@
     const value = cleanText(name);
     if (!value) throw new Error('Nome caso vuoto');
     const now = new Date().toISOString();
-    const record = {id: newCaseId(), account: getAccountScope(), name: value, status: '', createdAt: now, updatedAt: now};
+    const record = {id:newCaseId(), account:getAccountScope(), name:value, status:'', createdAt:now, updatedAt:now};
     await storePut(CASE_STORE, record);
     return record;
   }
 
   async function saveCaseStatus(group, status) {
-    const next = {...group, status: cleanText(status), updatedAt: new Date().toISOString()};
+    const next = {...group, status:cleanText(status), updatedAt:new Date().toISOString()};
     await storePut(CASE_STORE, next);
     return next;
   }
 
   function currentConversation(subject) {
     const threadId = getOpenThreadId();
-    return {
-      memberKey: buildEntityKey(subject, threadId),
-      account: getAccountScope(),
-      threadId,
-      subject,
-      url: location.href,
-      updatedAt: new Date().toISOString()
-    };
+    return {memberKey:buildEntityKey(subject, threadId), account:getAccountScope(), threadId, subject, url:location.href, updatedAt:new Date().toISOString()};
   }
 
   async function linkCurrentConversation(groupId, subject) {
@@ -467,23 +427,16 @@
 
   function renderChip(row, className, text, title) {
     const existing = row.querySelector(`.${className}`);
-    if (!text) {
-      existing?.remove();
-      return;
-    }
-
+    if (!text) { existing?.remove(); return; }
     const host = findRowHost(row);
     if (!host) return;
-
     const chip = existing || document.createElement('span');
     chip.className = className;
     if (chip.textContent !== text) chip.textContent = text;
     chip.title = title || text;
-
     if (!existing) {
       const actions = host.querySelector(`.${ROW_ACTIONS}`);
-      if (actions) host.insertBefore(chip, actions);
-      else host.appendChild(chip);
+      if (actions) host.insertBefore(chip, actions); else host.appendChild(chip);
     }
   }
 
@@ -492,7 +445,6 @@
     return makeButton(kind, isMarkdown ? 'Copia Gmail Search in Markdown' : 'Copia URL Gmail Search', async () => {
       const subject = cleanText(getSubject());
       if (!subject) return showToast('Oggetto email non trovato.', true);
-
       const search = buildGmailSearch(subject);
       try {
         await copyText(isMarkdown ? search.markdown : search.url);
@@ -508,7 +460,6 @@
     const subject = getRowSubject(row);
     const host = subject && findRowHost(row);
     if (!host) return;
-
     if (!row.querySelector(`.${ROW_ACTIONS}`)) {
       const actions = document.createElement('span');
       actions.className = ROW_ACTIONS;
@@ -521,15 +472,12 @@
   async function refreshRows(force = false) {
     try {
       await loadCache(force);
-
       for (const row of document.querySelectorAll('tr.zA')) {
         enhanceMailRow(row);
         const subject = getRowSubject(row);
         if (!subject) continue;
-
         const note = findNoteForRow(row, subject);
         renderChip(row, ROW_NOTE, cleanText(note?.text) ? `Stato: ${cleanText(note.text)}` : '', cleanText(note?.text));
-
         const member = findMemberForRow(row, subject);
         const group = member ? cache.casesById.get(member.groupId) : null;
         const caseText = group ? `Caso: ${group.name}${cleanText(group.status) ? ` · ${cleanText(group.status)}` : ''}` : '';
@@ -542,22 +490,15 @@
 
   function enhanceOpenActions() {
     const subjectElement = findOpenMailSubjectElement();
-    if (!subjectElement) {
-      document.getElementById(OPEN_ACTIONS_ID)?.remove();
-      return;
-    }
-
+    if (!subjectElement) { document.getElementById(OPEN_ACTIONS_ID)?.remove(); return; }
     const existing = document.getElementById(OPEN_ACTIONS_ID);
     if (existing?.previousElementSibling === subjectElement) return;
     existing?.remove();
-
     const actions = document.createElement('span');
     actions.id = OPEN_ACTIONS_ID;
     actions.appendChild(makeCopyButton('url', () => cleanText(subjectElement.textContent)));
     actions.appendChild(makeCopyButton('markdown', () => cleanText(subjectElement.textContent)));
-    actions.appendChild(makeButton('case', 'Collega questa conversazione a un caso', async () => {
-      await toggleCasePicker(subjectElement);
-    }));
+    actions.appendChild(makeButton('case', 'Collega questa conversazione a un caso', async () => toggleCasePicker(subjectElement)));
     subjectElement.insertAdjacentElement('afterend', actions);
   }
 
@@ -579,11 +520,7 @@
 
   async function enhanceOpenNote() {
     const subjectElement = findOpenMailSubjectElement();
-    if (!subjectElement) {
-      document.getElementById(NOTE_PANEL_ID)?.remove();
-      return;
-    }
-
+    if (!subjectElement) { document.getElementById(NOTE_PANEL_ID)?.remove(); return; }
     const subject = cleanText(subjectElement.textContent);
     const key = buildEntityKey(subject);
     const existing = document.getElementById(NOTE_PANEL_ID);
@@ -593,18 +530,15 @@
     const panel = document.createElement('div');
     panel.id = NOTE_PANEL_ID;
     panel.dataset.key = key;
-
     const label = document.createElement('span');
     label.className = 'gsp-label';
     label.textContent = 'Stato';
-
     const input = createTextInput('Es. Aspetto risposta da X e Y');
     input.dataset.saved = '';
 
     async function persist(showMessage) {
       const value = cleanText(input.value);
       if (value === (input.dataset.saved || '')) return;
-
       try {
         await saveNote(key, subject, value);
         input.value = value;
@@ -633,18 +567,10 @@
 
     input.addEventListener('keydown', async (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        await persist(true);
-        input.blur();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        input.value = input.dataset.saved || '';
-        input.blur();
-      }
+      if (event.key === 'Enter') { event.preventDefault(); await persist(true); input.blur(); }
+      else if (event.key === 'Escape') { event.preventDefault(); input.value = input.dataset.saved || ''; input.blur(); }
     });
     input.addEventListener('blur', () => persist(false));
-
     panel.append(label, input, saveButton, deleteButton);
     const host = getOpenSubjectHost(subjectElement);
     if (!host) return;
@@ -673,31 +599,23 @@
       document.getElementById(CASE_PICKER_ID)?.remove();
       return;
     }
-
     const subject = cleanText(subjectElement.textContent);
     const memberKey = buildEntityKey(subject);
     await loadCache(force);
-
     const membership = cache.membersByKey.get(memberKey) || findBySubjectUnique(cache.membersBySubject, subject);
     const group = membership ? cache.casesById.get(membership.groupId) : null;
     const existing = document.getElementById(CASE_PANEL_ID);
-
-    if (!group) {
-      existing?.remove();
-      return;
-    }
-
-    if (existing?.dataset.groupId === group.id && !force) return;
+    if (!group) { existing?.remove(); return; }
+    if (existing?.dataset.groupId === group.id && existing?.dataset.memberKey === membership.memberKey && !force) return;
     existing?.remove();
 
     const panel = document.createElement('div');
     panel.id = CASE_PANEL_ID;
     panel.dataset.groupId = group.id;
-
+    panel.dataset.memberKey = membership.memberKey;
     const title = document.createElement('span');
     title.className = 'gsp-case-title';
     title.textContent = `Caso: ${group.name}`;
-
     const status = createTextInput('Stato del caso');
     status.classList.add('gsp-case-status');
     status.value = cleanText(group.status);
@@ -706,7 +624,6 @@
     async function persistStatus(showMessage) {
       const value = cleanText(status.value);
       if (value === (status.dataset.saved || '')) return;
-
       try {
         const updated = await saveCaseStatus(group, value);
         status.value = updated.status;
@@ -722,15 +639,8 @@
 
     status.addEventListener('keydown', async (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        await persistStatus(true);
-        status.blur();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        status.value = status.dataset.saved || '';
-        status.blur();
-      }
+      if (event.key === 'Enter') { event.preventDefault(); await persistStatus(true); status.blur(); }
+      else if (event.key === 'Escape') { event.preventDefault(); status.value = status.dataset.saved || ''; status.blur(); }
     });
     status.addEventListener('blur', () => persistStatus(false));
 
@@ -747,7 +657,6 @@
         showToast('Non riesco a scollegare la conversazione.', true);
       }
     });
-
     panel.append(title, status, manageButton, unlinkButton);
 
     const members = document.createElement('ul');
@@ -758,12 +667,11 @@
       link.href = memberNavigationUrl(member);
       link.textContent = member.subject || 'Conversazione';
       link.title = member.subject || '';
-      if (member.memberKey === memberKey) link.textContent += ' (questa)';
+      if (member.memberKey === membership.memberKey) link.textContent += ' (questa)';
       item.appendChild(link);
       members.appendChild(item);
     }
     panel.appendChild(members);
-
     const notePanel = document.getElementById(NOTE_PANEL_ID);
     const host = notePanel || getOpenSubjectHost(subjectElement);
     if (host) host.insertAdjacentElement('afterend', panel);
@@ -771,26 +679,20 @@
 
   async function toggleCasePicker(subjectElement, forceOpen = false) {
     const existing = document.getElementById(CASE_PICKER_ID);
-    if (existing && !forceOpen) {
-      existing.remove();
-      return;
-    }
+    if (existing && !forceOpen) { existing.remove(); return; }
     existing?.remove();
-
     const subject = cleanText(subjectElement.textContent);
     await loadCache();
 
     const picker = document.createElement('div');
     picker.id = CASE_PICKER_ID;
-
     const label = document.createElement('span');
     label.className = 'gsp-label';
     label.textContent = 'Collega a caso';
     picker.appendChild(label);
-
     const list = document.createElement('div');
     list.className = 'gsp-picker-list';
-    const groups = [...cache.casesById.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
 
     if (!groups.length) {
       const muted = document.createElement('div');
@@ -826,11 +728,7 @@
     const input = createTextInput('Nuovo caso, es. Preventivo Rossi');
     const addButton = makeButton('save', 'Crea caso e collega', async () => {
       const name = cleanText(input.value);
-      if (!name) {
-        input.focus();
-        return;
-      }
-
+      if (!name) { input.focus(); return; }
       try {
         const group = await createCase(name);
         await linkCurrentConversation(group.id, subject);
@@ -843,96 +741,61 @@
         showToast('Non riesco a creare il caso.', true);
       }
     });
-
     input.addEventListener('keydown', (event) => {
       event.stopPropagation();
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        addButton.click();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        picker.remove();
-      }
+      if (event.key === 'Enter') { event.preventDefault(); addButton.click(); }
+      else if (event.key === 'Escape') { event.preventDefault(); picker.remove(); }
     });
-
     newRow.append(input, addButton);
     picker.appendChild(newRow);
-
     const panel = document.getElementById(CASE_PANEL_ID) || document.getElementById(NOTE_PANEL_ID) || getOpenSubjectHost(subjectElement);
     if (panel) panel.insertAdjacentElement('afterend', picker);
     input.focus();
   }
 
-  function buildMarkdownExport() {
-    const lines = [];
-    const groups = [...cache.casesById.values()].sort((a, b) => a.name.localeCompare(b.name, 'it'));
-
-    lines.push('# Gmail Superpowers');
-    lines.push('');
-    lines.push(`Esportato: ${new Date().toLocaleString('it-IT')}`);
-    lines.push('');
-    lines.push('## Casi');
-    lines.push('');
-
-    if (!groups.length) {
-      lines.push('_Nessun caso._');
-      lines.push('');
-    }
-
-    for (const group of groups) {
-      lines.push(`### ${escapeMarkdownText(group.name)}`);
-      lines.push('');
-      lines.push(`Stato: ${cleanText(group.status) ? escapeMarkdownText(group.status) : '—'}`);
-      lines.push('');
-      lines.push('Conversazioni:');
-
-      const members = [...(cache.membersByCase.get(group.id) || [])]
-        .sort((a, b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
-
-      if (!members.length) {
-        lines.push('- _Nessuna conversazione collegata_');
-      }
-
-      for (const member of members) {
-        const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
-        lines.push(`- ${buildGmailSearch(subject).markdown}`);
-
-        const note = findNoteForMember(member);
-        if (cleanText(note?.text)) {
-          lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
-        }
-      }
-
-      lines.push('');
-    }
-
-    const ungroupedNotes = [...cache.notesByKey.values()]
+  function getUngroupedNotes() {
+    return [...cache.notesByKey.values()]
       .filter((note) => {
         const member = findMemberForNote(note);
         return !member || !cache.casesById.has(member.groupId);
       })
-      .sort((a, b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+      .sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+  }
 
-    lines.push('## Conversazioni con stato senza caso');
-    lines.push('');
+  function buildMarkdownExport() {
+    const lines = [];
+    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
+    lines.push('# Gmail Superpowers', '', `Esportato: ${new Date().toLocaleString('it-IT')}`, '', '## Casi', '');
+    if (!groups.length) lines.push('_Nessun caso._', '');
 
-    if (!ungroupedNotes.length) {
-      lines.push('_Nessuna._');
-    } else {
-      for (const note of ungroupedNotes) {
-        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
+    for (const group of groups) {
+      lines.push(`### ${escapeMarkdownText(group.name)}`, '', `Stato: ${cleanText(group.status) ? escapeMarkdownText(group.status) : '—'}`, '', 'Conversazioni:');
+      const members = [...(cache.membersByCase.get(group.id) || [])].sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+      if (!members.length) lines.push('- _Nessuna conversazione collegata_');
+      for (const member of members) {
+        const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
         lines.push(`- ${buildGmailSearch(subject).markdown}`);
-        lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
+        const note = findNoteForMember(member);
+        if (cleanText(note?.text)) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
       }
+      lines.push('');
     }
 
-    lines.push('');
+    lines.push('## Conversazioni con stato senza caso', '');
+    const ungrouped = getUngroupedNotes();
+    if (!ungrouped.length) lines.push('_Nessuna._');
+    else {
+      for (const note of ungrouped) {
+        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
+        lines.push(`- ${buildGmailSearch(subject).markdown}`, `  - Stato: ${escapeMarkdownText(note.text)}`);
+      }
+    }
     return `${lines.join('\n').trim()}\n`;
   }
 
   function downloadMarkdown(markdown) {
     const date = new Date().toISOString().slice(0, 10);
-    const blob = new Blob([markdown], {type: 'text/markdown;charset=utf-8'});
+    const blob = new Blob([markdown], {type:'text/markdown;charset=utf-8'});
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -947,8 +810,7 @@
   async function exportMarkdown() {
     try {
       await loadCache(true);
-      const markdown = buildMarkdownExport();
-      downloadMarkdown(markdown);
+      downloadMarkdown(buildMarkdownExport());
       showToast('Export Markdown creato');
     } catch (error) {
       console.error('[Gmail Superpowers] Export error:', error);
@@ -956,33 +818,194 @@
     }
   }
 
-  function ensureExportButton() {
-    if (document.getElementById(EXPORT_BUTTON_ID)) return;
+  function makePreviewLink(subject) {
+    const link = document.createElement('a');
+    link.href = buildGmailSearch(subject).url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = `[email: ${subject}]`;
+    return link;
+  }
 
+  function appendPreviewStatus(parent, text) {
+    const status = document.createElement('div');
+    status.className = 'gsp-preview-status';
+    const strong = document.createElement('strong');
+    strong.textContent = 'Stato: ';
+    status.appendChild(strong);
+    status.appendChild(document.createTextNode(cleanText(text) || '—'));
+    parent.appendChild(status);
+  }
+
+  function buildHtmlPreviewContent(container) {
+    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
+    const casesTitle = document.createElement('h2');
+    casesTitle.textContent = 'Casi';
+    container.appendChild(casesTitle);
+
+    if (!groups.length) {
+      const empty = document.createElement('p');
+      empty.className = 'gsp-preview-empty';
+      empty.textContent = 'Nessun caso.';
+      container.appendChild(empty);
+    }
+
+    for (const group of groups) {
+      const card = document.createElement('section');
+      card.className = 'gsp-preview-case';
+      const title = document.createElement('h3');
+      title.textContent = group.name;
+      card.appendChild(title);
+      appendPreviewStatus(card, group.status);
+
+      const members = [...(cache.membersByCase.get(group.id) || [])].sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+      if (!members.length) {
+        const empty = document.createElement('div');
+        empty.className = 'gsp-preview-empty';
+        empty.textContent = 'Nessuna conversazione collegata.';
+        card.appendChild(empty);
+      } else {
+        const list = document.createElement('ul');
+        list.className = 'gsp-preview-list';
+        for (const member of members) {
+          const item = document.createElement('li');
+          const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
+          item.appendChild(makePreviewLink(subject));
+          const note = findNoteForMember(member);
+          if (cleanText(note?.text)) {
+            const noteText = document.createElement('span');
+            noteText.className = 'gsp-preview-note';
+            noteText.textContent = `Stato: ${cleanText(note.text)}`;
+            item.appendChild(noteText);
+          }
+          list.appendChild(item);
+        }
+        card.appendChild(list);
+      }
+      container.appendChild(card);
+    }
+
+    const orphanTitle = document.createElement('h2');
+    orphanTitle.textContent = 'Conversazioni con stato senza caso';
+    container.appendChild(orphanTitle);
+    const ungrouped = getUngroupedNotes();
+    if (!ungrouped.length) {
+      const empty = document.createElement('p');
+      empty.className = 'gsp-preview-empty';
+      empty.textContent = 'Nessuna.';
+      container.appendChild(empty);
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'gsp-preview-list';
+      for (const note of ungrouped) {
+        const item = document.createElement('li');
+        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
+        item.appendChild(makePreviewLink(subject));
+        const noteText = document.createElement('span');
+        noteText.className = 'gsp-preview-note';
+        noteText.textContent = `Stato: ${cleanText(note.text)}`;
+        item.appendChild(noteText);
+        list.appendChild(item);
+      }
+      container.appendChild(list);
+    }
+  }
+
+  function closeHtmlPreview() {
+    document.getElementById(PREVIEW_MODAL_ID)?.remove();
+  }
+
+  async function showHtmlPreview() {
+    try {
+      await loadCache(true);
+      closeHtmlPreview();
+
+      const overlay = document.createElement('div');
+      overlay.id = PREVIEW_MODAL_ID;
+      const dialog = document.createElement('div');
+      dialog.className = 'gsp-preview-dialog';
+      const header = document.createElement('div');
+      header.className = 'gsp-preview-header';
+      const headingBox = document.createElement('div');
+      headingBox.style.flex = '1';
+      const title = document.createElement('div');
+      title.className = 'gsp-preview-title';
+      title.textContent = 'Anteprima export';
+      const meta = document.createElement('div');
+      meta.className = 'gsp-preview-meta';
+      meta.textContent = `${getAccountScope()} · ${new Date().toLocaleString('it-IT')}`;
+      headingBox.append(title, meta);
+
+      const downloadButton = document.createElement('button');
+      downloadButton.type = 'button';
+      downloadButton.className = 'gsp-preview-action';
+      downloadButton.textContent = 'Scarica MD';
+      downloadButton.addEventListener('click', (event) => {
+        stopAction(event);
+        downloadMarkdown(buildMarkdownExport());
+        showToast('Export Markdown creato');
+      }, true);
+
+      const closeButton = document.createElement('button');
+      closeButton.type = 'button';
+      closeButton.className = 'gsp-preview-close';
+      closeButton.title = 'Chiudi anteprima';
+      closeButton.setAttribute('aria-label', closeButton.title);
+      closeButton.textContent = '×';
+      closeButton.addEventListener('click', (event) => {
+        stopAction(event);
+        closeHtmlPreview();
+      }, true);
+
+      header.append(headingBox, downloadButton, closeButton);
+      const body = document.createElement('div');
+      body.className = 'gsp-preview-body';
+      buildHtmlPreviewContent(body);
+      dialog.append(header, body);
+      overlay.appendChild(dialog);
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) closeHtmlPreview();
+      });
+      overlay.addEventListener('pointerdown', stopPropagationOnly, true);
+      overlay.addEventListener('mousedown', stopPropagationOnly, true);
+      document.body.appendChild(overlay);
+    } catch (error) {
+      console.error('[Gmail Superpowers] Preview error:', error);
+      showToast('Non riesco a creare l’anteprima.', true);
+    }
+  }
+
+  function createGlobalButton(kind, labelText, title, handler) {
     const button = document.createElement('button');
-    button.id = EXPORT_BUTTON_ID;
     button.type = 'button';
-    button.title = 'Esporta casi, stati e conversazioni in Markdown';
-    button.setAttribute('aria-label', button.title);
-    button.appendChild(createSvgIcon('download'));
-
+    button.className = 'gsp-global-btn';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.appendChild(createSvgIcon(kind));
     const label = document.createElement('span');
-    label.textContent = 'Export MD';
+    label.textContent = labelText;
     button.appendChild(label);
-
     button.addEventListener('pointerdown', stopPropagationOnly, true);
     button.addEventListener('mousedown', stopPropagationOnly, true);
     button.addEventListener('click', async (event) => {
       stopAction(event);
-      await exportMarkdown();
+      await handler();
     }, true);
+    return button;
+  }
 
-    document.body.appendChild(button);
+  function ensureGlobalTools() {
+    if (document.getElementById(GLOBAL_TOOLS_ID)) return;
+    const tools = document.createElement('div');
+    tools.id = GLOBAL_TOOLS_ID;
+    tools.appendChild(createGlobalButton('preview', 'Anteprima', 'Anteprima HTML di casi, stati e conversazioni', showHtmlPreview));
+    tools.appendChild(createGlobalButton('download', 'Export MD', 'Esporta casi, stati e conversazioni in Markdown', exportMarkdown));
+    document.body.appendChild(tools);
   }
 
   async function refreshAll(force = false) {
     injectStyles();
-    ensureExportButton();
+    ensureGlobalTools();
     document.querySelectorAll('tr.zA').forEach(enhanceMailRow);
     await refreshRows(force);
     enhanceOpenActions();
@@ -998,8 +1021,12 @@
     }, 120);
   }
 
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.getElementById(PREVIEW_MODAL_ID)) closeHtmlPreview();
+  }, true);
+
   const observer = new MutationObserver(scheduleRefresh);
-  observer.observe(document.documentElement, {childList: true, subtree: true});
+  observer.observe(document.documentElement, {childList:true, subtree:true});
   window.addEventListener('hashchange', scheduleRefresh);
   window.addEventListener('popstate', scheduleRefresh);
   scheduleRefresh();
