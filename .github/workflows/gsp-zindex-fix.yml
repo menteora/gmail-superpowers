@@ -1,0 +1,48 @@
+name: Apply Gmail Superpowers z-index fix
+
+on:
+  push:
+    paths:
+      - .github/workflows/gsp-zindex-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch userscript
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('gmail-superpowers.user.js')
+          text = path.read_text(encoding='utf-8')
+
+          old_version = '// @version      0.7.1'
+          new_version = '// @version      0.7.2'
+          if old_version not in text:
+              raise SystemExit('Expected userscript version 0.7.1 not found')
+
+          z_count = text.count('z-index:20;')
+          if z_count != 3:
+              raise SystemExit(f'Expected exactly 3 inline z-index:20 occurrences, found {z_count}')
+
+          text = text.replace(old_version, new_version, 1)
+          text = text.replace('z-index:20;', 'z-index:auto;')
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gmail-superpowers.user.js
+          git rm .github/workflows/gsp-zindex-fix.yml
+          git commit -m "fix: keep Gmail menus above inline superpowers UI"
+          git push
