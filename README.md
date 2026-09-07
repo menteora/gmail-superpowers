@@ -1,6 +1,6 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds quick actions to Gmail for copying a portable Gmail search based on the email subject.
+Tampermonkey userscript that adds quick actions to Gmail for copying portable Gmail searches and keeping a local status note for each open conversation.
 
 The generated link does not point to a Gmail-specific message or thread ID. Instead, it opens a Gmail search such as:
 
@@ -21,7 +21,37 @@ Gmail Superpowers adds two actions to each email row in the Gmail message list a
 [email: Example subject](https://mail.google.com/mail/#search/...)
 ```
 
-The buttons are added dynamically, so they continue to appear while navigating Gmail without a full page reload.
+When a conversation is open, Gmail Superpowers also adds a compact **Stato** field below the subject.
+
+Example:
+
+```text
+Stato  Aspetto risposta da X e Y   ✓   🗑
+```
+
+The status can be changed directly in the field and saved with the check button or by pressing **Enter**. Leaving the field also saves changes automatically. **Escape** restores the last saved value. The trash button deletes the stored status immediately.
+
+The buttons and status field are added dynamically, so they continue to appear while navigating Gmail without a full page reload.
+
+## Local status storage
+
+Status notes are stored in the browser with **IndexedDB** in a dedicated database:
+
+```text
+gmail-superpowers
+└── thread-notes
+```
+
+Whenever Gmail exposes a thread identifier in the current URL, the note is associated with that thread. If a usable thread identifier is not available, the script falls back to the email subject.
+
+The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is also included in the local key so notes from different Gmail accounts in the same browser do not normally overlap.
+
+These notes are intentionally local:
+
+- they are not sent to any API;
+- they are not stored in Gmail;
+- they are not synchronized between browsers or devices;
+- clearing the site's browser storage can remove them.
 
 ## Installation
 
@@ -49,7 +79,7 @@ When publishing a new version, increment `@version` in `gmail-superpowers.user.j
 
 There is no separate `.meta.js` file.
 
-## Current behavior
+## Gmail Search behavior
 
 For an email with subject:
 
@@ -71,9 +101,11 @@ The Markdown button copies:
 
 ## Notes
 
-Gmail is a single-page application and its internal DOM can change over time. The script therefore uses a `MutationObserver` to add the actions when Gmail renders new message rows or opens a conversation.
+Gmail is a single-page application and its internal DOM can change over time. The script therefore uses a `MutationObserver` to add the actions and status field when Gmail renders new message rows or opens a conversation.
 
-The script deliberately avoids Gmail message IDs and thread IDs for the portable link. Its purpose is to create a search that can also work in another recipient's Gmail account, provided that recipient has the same email and the subject is sufficiently distinctive.
+The script deliberately avoids Gmail message IDs and thread IDs for the **portable search link**. Its purpose is to create a search that can also work in another recipient's Gmail account, provided that recipient has the same email and the subject is sufficiently distinctive.
+
+Thread IDs may still be used **locally** as IndexedDB keys for the status note because that information never leaves the current browser.
 
 ## Files
 
