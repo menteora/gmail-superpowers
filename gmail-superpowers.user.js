@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.3.0
-// @description  Portable Gmail search links plus local per-thread status notes.
+// @version      0.3.1
+// @description  Portable Gmail search links plus local per-thread status notes visible in opened emails and message lists.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_setClipboard
@@ -17,6 +17,7 @@
   'use strict';
 
   const ROW_CLASS = 'gmail-superpowers-row-actions';
+  const ROW_NOTE_CLASS = 'gmail-superpowers-row-note';
   const OPEN_ACTIONS_ID = 'gmail-superpowers-open-actions';
   const NOTE_PANEL_ID = 'gmail-superpowers-note-panel';
   const TOAST_ID = 'gmail-superpowers-toast';
@@ -28,6 +29,9 @@
   const NOTE_STORE = 'thread-notes';
 
   let dbPromise = null;
+  let noteCachePromise = null;
+  let noteByKey = new Map();
+  let noteBySubject = new Map();
 
   const ICON_PATHS = {
     url: [
@@ -74,6 +78,22 @@
         margin-left: 7px;
         vertical-align: middle;
         flex: 0 0 auto;
+      }
+
+      .${ROW_NOTE_CLASS} {
+        display: inline-block;
+        max-width: 260px;
+        margin-left: 7px;
+        padding: 1px 7px;
+        border-radius: 10px;
+        background: rgba(251, 188, 4, .16);
+        color: #5f4b00;
+        font: 11px/18px Arial, sans-serif;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        pointer-events: none;
       }
 
       .gmail-superpowers-icon-button,
@@ -195,6 +215,10 @@
       .trim();
   }
 
+  function normalizeSubject(value) {
+    return cleanText(value).toLowerCase();
+  }
+
   function findOpenMailSubjectElement() {
     const selectors = [
       'h2.hP',
@@ -231,31 +255,64 @@
     return match ? `u${match[1]}` : 'u-default';
   }
 
+  function isLikelyThreadId(candidate) {
+    const value = cleanText(candidate).replace(/^#/, '');
+    if (!value || value.length < 8) return false;
+
+    const lower = value.toLowerCase();
+    const reserved = new Set([
+      'inbox', 'sent', 'drafts', 'starred', 'important',
+      'all', 'spam', 'trash', 'search'
+    ]);
+
+    if (reserved.has(lower)) return false;
+    if (value.includes('%22') || value.includes('%3a') || value.includes(' ')) return false;
+    return true;
+  }
+
   function getOpenThreadId() {
     const rawHash = location.hash || '';
     const parts = rawHash.split('/').filter(Boolean);
     const candidate = parts[parts.length - 1] || '';
-
-    if (!candidate || candidate.length < 8) return '';
-
-    const lower = candidate.toLowerCase();
-    const reserved = new Set([
-      '#inbox', 'inbox', 'sent', 'drafts', 'starred', 'important',
-      'all', 'spam', 'trash', 'search'
-    ]);
-
-    if (reserved.has(lower)) return '';
-    if (candidate.includes('%22') || candidate.includes('%3a') || candidate.includes(' ')) return '';
-
-    return candidate.replace(/^#/, '');
+    return isLikelyThreadId(candidate) ? candidate.replace(/^#/, '') : '';
   }
 
-  function buildNoteKey(subject) {
-    const account = getAccountScope();
-    const threadId = getOpenThreadId();
+  function getRowThreadId(row) {
+    const attributeNames = [
+      'data-legacy-thread-id',
+      'data-thread-id',
+      'data-thread-perm-id'
+    ];
 
+    for (const name of attributeNames) {
+      const direct = row.getAttribute(name);
+      if (isLikelyThreadId(direct)) return direct.replace(/^#/, '');
+    }
+
+    const nested = row.querySelector('[data-legacy-thread-id], [data-thread-id], [data-thread-perm-id]');
+    if (nested) {
+      for (const name of attributeNames) {
+        const value = nested.getAttribute(name);
+        if (isLikelyThreadId(value)) return value.replace(/^#/, '');
+      }
+    }
+
+    for (const link of row.querySelectorAll('a[href]')) {
+      const href = link.getAttribute('href') || '';
+      if (!href.includes('#')) continue;
+      const hash = href.slice(href.indexOf('#'));
+      const parts = hash.split('/').filter(Boolean);
+      const candidate = parts[parts.length - 1] || '';
+      if (isLikelyThreadId(candidate)) return candidate.replace(/^#/, '');
+    }
+
+    return '';
+  }
+
+  function buildNoteKey(subject, threadId = getOpenThreadId()) {
+    const account = getAccountScope();
     if (threadId) return `${account}:thread:${threadId}`;
-    return `${account}:subject:${cleanText(subject).toLowerCase()}`;
+    return `${account}:subject:${normalizeSubject(subject)}`;
   }
 
   function openDatabase() {
@@ -286,6 +343,17 @@
       const request = tx.objectStore(NOTE_STORE).get(key);
       request.onsuccess = () => resolve(request.result || null);
       request.onerror = () => reject(request.error || new Error('Errore lettura nota'));
+    });
+  }
+
+  async function getAllNoteRecords() {
+    const db = await openDatabase();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(NOTE_STORE, 'readonly');
+      const request = tx.objectStore(NOTE_STORE).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error || new Error('Errore lettura note'));
     });
   }
 
@@ -322,6 +390,45 @@
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error || new Error('Errore eliminazione nota'));
     });
+  }
+
+  function invalidateNoteCache() {
+    noteCachePromise = null;
+  }
+
+  async function loadNoteCache(force = false) {
+    if (force) invalidateNoteCache();
+    if (noteCachePromise) return noteCachePromise;
+
+    noteCachePromise = (async () => {
+      const records = await getAllNoteRecords();
+      const accountPrefix = `${getAccountScope()}:`;
+      noteByKey = new Map();
+      noteBySubject = new Map();
+
+      for (const record of records) {
+        if (!record?.key?.startsWith(accountPrefix)) continue;
+        const text = cleanText(record.text);
+        if (!text) continue;
+
+        noteByKey.set(record.key, record);
+
+        const subjectKey = normalizeSubject(record.subject);
+        if (!subjectKey) continue;
+        const bucket = noteBySubject.get(subjectKey) || [];
+        bucket.push(record);
+        noteBySubject.set(subjectKey, bucket);
+      }
+    })();
+
+    try {
+      await noteCachePromise;
+    } catch (error) {
+      noteCachePromise = null;
+      throw error;
+    }
+
+    return noteCachePromise;
   }
 
   function escapeGmailSearchValue(value) {
@@ -471,13 +578,11 @@
   function findRowActionsHost(row) {
     const subject = row.querySelector('span.bog');
     if (!subject) return null;
-
     return subject.closest('.y6') || subject.parentElement;
   }
 
   function enhanceMailRow(row) {
     if (!(row instanceof HTMLElement)) return;
-    if (row.querySelector(`.${ROW_CLASS}`)) return;
 
     const subject = getRowSubject(row);
     if (!subject) return;
@@ -485,12 +590,63 @@
     const host = findRowActionsHost(row);
     if (!host) return;
 
-    const group = createActionGroup(ROW_CLASS, () => getRowSubject(row));
-    host.appendChild(group);
+    if (!row.querySelector(`.${ROW_CLASS}`)) {
+      const group = createActionGroup(ROW_CLASS, () => getRowSubject(row));
+      host.appendChild(group);
+    }
   }
 
   function enhanceMailRows() {
     document.querySelectorAll('tr.zA').forEach(enhanceMailRow);
+  }
+
+  function findNoteForRow(row, subject) {
+    const threadId = getRowThreadId(row);
+    if (threadId) {
+      const exact = noteByKey.get(buildNoteKey(subject, threadId));
+      if (exact) return exact;
+    }
+
+    const candidates = noteBySubject.get(normalizeSubject(subject)) || [];
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function renderRowNote(row, record) {
+    const existing = row.querySelector(`.${ROW_NOTE_CLASS}`);
+    const text = cleanText(record?.text || '');
+
+    if (!text) {
+      existing?.remove();
+      return;
+    }
+
+    const host = findRowActionsHost(row);
+    if (!host) return;
+
+    const note = existing || document.createElement('span');
+    note.className = ROW_NOTE_CLASS;
+    note.textContent = `Stato: ${text}`;
+    note.title = text;
+
+    if (!existing) {
+      const actions = host.querySelector(`.${ROW_CLASS}`);
+      if (actions) host.insertBefore(note, actions);
+      else host.appendChild(note);
+    }
+  }
+
+  async function refreshMailRowNotes(force = false) {
+    try {
+      await loadNoteCache(force);
+
+      for (const row of document.querySelectorAll('tr.zA')) {
+        const subject = getRowSubject(row);
+        if (!subject) continue;
+        renderRowNote(row, findNoteForRow(row, subject));
+      }
+    } catch (error) {
+      console.error('[Gmail Superpowers] Row note load error:', error);
+    }
   }
 
   function enhanceOpenMessage() {
@@ -549,6 +705,11 @@
     input.addEventListener('mousedown', stopPropagationOnly, true);
     input.addEventListener('click', stopPropagationOnly, true);
 
+    async function refreshListAfterNoteChange() {
+      invalidateNoteCache();
+      await refreshMailRowNotes(true);
+    }
+
     const saveButton = createNoteButton('save', 'Salva stato', async () => {
       const value = cleanText(input.value);
 
@@ -557,6 +718,7 @@
         input.value = value;
         input.dataset.savedValue = value;
         deleteButton.disabled = !value;
+        void refreshListAfterNoteChange();
         showToast(value ? 'Stato salvato' : 'Stato eliminato');
       } catch (error) {
         console.error('[Gmail Superpowers] Note save error:', error);
@@ -570,6 +732,7 @@
         input.value = '';
         input.dataset.savedValue = '';
         deleteButton.disabled = true;
+        void refreshListAfterNoteChange();
         input.focus();
         showToast('Stato eliminato');
       } catch (error) {
@@ -589,6 +752,7 @@
         input.value = value;
         input.dataset.savedValue = value;
         deleteButton.disabled = !value;
+        void refreshListAfterNoteChange();
       } catch (error) {
         console.error('[Gmail Superpowers] Note autosave error:', error);
         showToast('Non riesco a salvare lo stato.', true);
@@ -644,8 +808,9 @@
       refreshTimer = null;
       injectStyles();
       enhanceMailRows();
+      void refreshMailRowNotes();
       enhanceOpenMessage();
-      enhanceOpenNote();
+      void enhanceOpenNote();
     }, 100);
   }
 
