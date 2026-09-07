@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.5.1
-// @description  Portable Gmail links, local status notes, cases, Markdown export, and HTML preview.
+// @version      0.6.0
+// @description  Portable Gmail links, local statuses, deadlines, cases, admin dashboard, and Markdown export.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_setClipboard
@@ -19,19 +19,22 @@
   const ROW_ACTIONS = 'gmail-superpowers-row-actions';
   const ROW_NOTE = 'gmail-superpowers-row-note';
   const ROW_CASE = 'gmail-superpowers-row-case';
+  const ROW_DUE = 'gmail-superpowers-row-due';
   const OPEN_ACTIONS_ID = 'gmail-superpowers-open-actions';
   const NOTE_PANEL_ID = 'gmail-superpowers-note-panel';
+  const DUE_PANEL_ID = 'gmail-superpowers-due-panel';
   const CASE_PANEL_ID = 'gmail-superpowers-case-panel';
   const CASE_PICKER_ID = 'gmail-superpowers-case-picker';
   const GLOBAL_TOOLS_ID = 'gmail-superpowers-global-tools';
-  const PREVIEW_MODAL_ID = 'gmail-superpowers-preview-modal';
+  const ADMIN_ROOT_ID = 'gmail-superpowers-admin-root';
   const TOAST_ID = 'gmail-superpowers-toast';
   const STYLE_ID = 'gmail-superpowers-style';
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const DB_NAME = 'gmail-superpowers';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
   const NOTE_STORE = 'thread-notes';
+  const DEADLINE_STORE = 'deadlines';
   const CASE_STORE = 'cases';
   const MEMBER_STORE = 'case-members';
 
@@ -39,6 +42,8 @@
   let cachePromise = null;
   let cache = emptyCache();
   let refreshTimer = null;
+  let adminView = 'deadlines';
+  let deadlineFilter = 'all';
 
   const ICON_PATHS = {
     url: [
@@ -56,18 +61,15 @@
       'M10.2 8.3 14 12.1l-1.4 1.4-3.8-3.8 1.4-1.4Z'
     ],
     close: ['M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z'],
-    download: ['M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z'],
-    preview: ['M12 5c5.5 0 9.5 5.2 10.6 6.8a.4.4 0 0 1 0 .4C21.5 13.8 17.5 19 12 19S2.5 13.8 1.4 12.2a.4.4 0 0 1 0-.4C2.5 10.2 6.5 5 12 5Zm0 2c-3.8 0-6.9 3.2-8.5 5 1.6 1.8 4.7 5 8.5 5s6.9-3.2 8.5-5C18.9 10.2 15.8 7 12 7Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Zm0 2a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z']
+    calendar: ['M7 2h2v2h6V2h2v2h3a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3V2Zm13 8H4v10h16V10ZM4 8h16V6H4v2Z'],
+    admin: ['M4 4h7v7H4V4Zm2 2v3h3V6H6Zm7-2h7v7h-7V4Zm2 2v3h3V6h-3ZM4 13h7v7H4v-7Zm2 2v3h3v-3H6Zm7-2h7v7h-7v-7Zm2 2v3h3v-3h-3Z']
   };
 
   function emptyCache() {
     return {
-      notesByKey: new Map(),
-      notesBySubject: new Map(),
-      casesById: new Map(),
-      membersByKey: new Map(),
-      membersBySubject: new Map(),
-      membersByCase: new Map()
+      notesByKey: new Map(), notesBySubject: new Map(),
+      deadlinesByKey: new Map(), deadlinesBySubject: new Map(),
+      casesById: new Map(), membersByKey: new Map(), membersBySubject: new Map(), membersByCase: new Map()
     };
   }
 
@@ -84,10 +86,18 @@
     return match ? `u${match[1]}` : 'u-default';
   }
 
+  function isAdminRoute() {
+    return (location.hash || '').startsWith('#gsp-admin');
+  }
+
+  function adminUrl() {
+    return `${location.origin}${location.pathname}#gsp-admin`;
+  }
+
   function isLikelyThreadId(candidate) {
     const value = cleanText(candidate).replace(/^#/, '');
     if (!value || value.length < 8) return false;
-    if (['inbox', 'sent', 'drafts', 'starred', 'important', 'all', 'spam', 'trash', 'search'].includes(value.toLowerCase())) return false;
+    if (['inbox','sent','drafts','starred','important','all','spam','trash','search','gsp-admin'].includes(value.toLowerCase())) return false;
     return !value.includes('%22') && !value.includes('%3a') && !value.includes(' ');
   }
 
@@ -103,7 +113,6 @@
       const value = row.getAttribute(name);
       if (isLikelyThreadId(value)) return value.replace(/^#/, '');
     }
-
     const nested = row.querySelector('[data-legacy-thread-id], [data-thread-id], [data-thread-perm-id]');
     if (nested) {
       for (const name of attrs) {
@@ -111,7 +120,6 @@
         if (isLikelyThreadId(value)) return value.replace(/^#/, '');
       }
     }
-
     for (const link of row.querySelectorAll('a[href]')) {
       const href = link.getAttribute('href') || '';
       if (!href.includes('#')) continue;
@@ -166,45 +174,25 @@
     style.id = STYLE_ID;
     style.textContent = `
       .${ROW_ACTIONS}{display:inline-flex;align-items:center;gap:2px;margin-left:7px;vertical-align:middle}
-      .${ROW_NOTE},.${ROW_CASE}{display:inline-block;max-width:260px;margin-left:7px;padding:1px 7px;border-radius:10px;font:11px/18px Arial,sans-serif;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+      .${ROW_NOTE},.${ROW_CASE},.${ROW_DUE}{display:inline-block;max-width:260px;margin-left:7px;padding:1px 7px;border-radius:10px;font:11px/18px Arial,sans-serif;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
       .${ROW_NOTE}{background:rgba(251,188,4,.16);color:#5f4b00}
       .${ROW_CASE}{background:rgba(26,115,232,.12);color:#174ea6}
+      .${ROW_DUE}{background:rgba(52,168,83,.13);color:#137333}.gsp-due-overdue{background:rgba(217,48,37,.13)!important;color:#b3261e!important}.gsp-due-today{background:rgba(251,188,4,.22)!important;color:#7a5200!important}
       .gsp-btn{border:0;border-radius:50%;background:transparent;color:#5f6368;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;position:relative;z-index:20;pointer-events:auto!important;width:30px;height:30px;padding:5px}
-      .${ROW_ACTIONS} .gsp-btn{width:26px;height:26px;padding:4px}
-      .gsp-btn:hover{background:rgba(60,64,67,.12);color:#202124}.gsp-btn:active{background:rgba(60,64,67,.20)}.gsp-btn[disabled]{opacity:.32;cursor:default;background:transparent}
-      .gsp-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
+      .${ROW_ACTIONS} .gsp-btn{width:26px;height:26px;padding:4px}.gsp-btn:hover{background:rgba(60,64,67,.12);color:#202124}.gsp-btn:active{background:rgba(60,64,67,.20)}.gsp-btn[disabled]{opacity:.32;cursor:default;background:transparent}.gsp-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
       #${OPEN_ACTIONS_ID}{display:inline-flex;align-items:center;gap:2px;margin-left:8px;vertical-align:middle;position:relative;z-index:20;pointer-events:auto!important}
-      #${NOTE_PANEL_ID},#${CASE_PANEL_ID},#${CASE_PICKER_ID}{display:flex;align-items:center;gap:6px;margin:6px 0 10px 0;min-height:34px;max-width:820px;position:relative;z-index:20;font-family:Arial,sans-serif}
+      #${NOTE_PANEL_ID},#${DUE_PANEL_ID},#${CASE_PANEL_ID},#${CASE_PICKER_ID}{display:flex;align-items:center;gap:6px;margin:6px 0 10px;min-height:34px;max-width:820px;position:relative;z-index:20;font-family:Arial,sans-serif}
       #${CASE_PANEL_ID},#${CASE_PICKER_ID}{align-items:flex-start;padding:8px 10px;border:1px solid #dadce0;border-radius:10px;background:#fff;flex-wrap:wrap}
-      .gsp-label{flex:0 0 auto;font-size:12px;font-weight:600;color:#5f6368;line-height:32px}
-      .gsp-input{flex:1 1 auto;min-width:140px;height:32px;padding:5px 10px;border:1px solid #dadce0;border-radius:8px;outline:none;background:#fff;color:#202124;font:13px/20px Arial,sans-serif;box-sizing:border-box;pointer-events:auto!important}
-      .gsp-input:focus{border-color:#1a73e8;box-shadow:0 0 0 1px #1a73e8}
+      .gsp-label{flex:0 0 auto;font-size:12px;font-weight:600;color:#5f6368;line-height:32px}.gsp-input{flex:1 1 auto;min-width:140px;height:32px;padding:5px 10px;border:1px solid #dadce0;border-radius:8px;outline:none;background:#fff;color:#202124;font:13px/20px Arial,sans-serif;box-sizing:border-box;pointer-events:auto!important}.gsp-input:focus{border-color:#1a73e8;box-shadow:0 0 0 1px #1a73e8}.gsp-date-input{flex:0 0 170px}
       .gsp-case-title{font-size:13px;font-weight:600;color:#202124;line-height:30px}.gsp-case-status{flex:1 1 260px}.gsp-members{width:100%;margin:2px 0 0;padding-left:20px;font:12px/20px Arial,sans-serif;color:#3c4043}.gsp-members a{color:#1a73e8;text-decoration:none}.gsp-members a:hover{text-decoration:underline}
-      .gsp-picker-list{display:flex;flex-wrap:wrap;gap:6px;width:100%}.gsp-case-choice{border:1px solid #dadce0;border-radius:14px;background:#fff;padding:4px 9px;font:12px Arial,sans-serif;cursor:pointer}.gsp-case-choice:hover{background:#f1f3f4}
-      .gsp-picker-new{display:flex;gap:6px;width:100%;align-items:center}.gsp-picker-new .gsp-input{max-width:420px}.gsp-muted{font:11px/16px Arial,sans-serif;color:#80868b;width:100%}
-      #${GLOBAL_TOOLS_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;display:flex;align-items:center;gap:8px;font-family:Arial,sans-serif;pointer-events:auto!important}
-      .gsp-global-btn{height:34px;padding:0 12px 0 9px;border:1px solid #dadce0;border-radius:18px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:6px;font:12px Arial,sans-serif}
-      .gsp-global-btn:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}.gsp-global-btn svg{width:17px;height:17px;fill:currentColor;pointer-events:none}
-      #${PREVIEW_MODAL_ID}{position:fixed;inset:0;z-index:2147483645;background:rgba(32,33,36,.52);display:flex;align-items:center;justify-content:center;padding:28px;box-sizing:border-box;font-family:Arial,sans-serif;pointer-events:auto!important}
-      .gsp-preview-dialog{width:min(900px,96vw);height:min(820px,92vh);background:#fff;border-radius:14px;box-shadow:0 16px 50px rgba(0,0,0,.35);display:flex;flex-direction:column;overflow:hidden;color:#202124}
-      .gsp-preview-header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #e0e0e0}.gsp-preview-title{font-size:18px;font-weight:600;flex:1}.gsp-preview-meta{font-size:11px;color:#80868b}
-      .gsp-preview-action{height:32px;border:1px solid #dadce0;border-radius:16px;background:#fff;padding:0 11px;cursor:pointer;color:#3c4043;font:12px Arial,sans-serif}.gsp-preview-action:hover{background:#f1f3f4}
-      .gsp-preview-close{width:32px;height:32px;border:0;border-radius:50%;background:transparent;cursor:pointer;font-size:22px;line-height:30px;color:#5f6368}.gsp-preview-close:hover{background:#f1f3f4}
-      .gsp-preview-body{padding:22px 28px 40px;overflow:auto;font-size:14px;line-height:1.5}.gsp-preview-body h2{font-size:20px;margin:24px 0 12px}.gsp-preview-body h2:first-child{margin-top:0}.gsp-preview-case{border:1px solid #e0e0e0;border-radius:10px;padding:14px 16px;margin:0 0 14px;background:#fff}.gsp-preview-case h3{font-size:16px;margin:0 0 8px}.gsp-preview-status{margin:0 0 10px;color:#3c4043}.gsp-preview-status strong{color:#202124}.gsp-preview-list{margin:4px 0 0;padding-left:22px}.gsp-preview-list li{margin:5px 0}.gsp-preview-list a{color:#1a73e8;text-decoration:none}.gsp-preview-list a:hover{text-decoration:underline}.gsp-preview-note{display:block;color:#5f6368;font-size:12px;margin-top:2px}.gsp-preview-empty{color:#80868b;font-style:italic}
+      .gsp-picker-list{display:flex;flex-wrap:wrap;gap:6px;width:100%}.gsp-case-choice{border:1px solid #dadce0;border-radius:14px;background:#fff;padding:4px 9px;font:12px Arial,sans-serif;cursor:pointer}.gsp-case-choice:hover{background:#f1f3f4}.gsp-picker-new{display:flex;gap:6px;width:100%;align-items:center}.gsp-picker-new .gsp-input{max-width:420px}.gsp-muted{font:11px/16px Arial,sans-serif;color:#80868b;width:100%}
+      #${GLOBAL_TOOLS_ID}{position:fixed;right:24px;bottom:24px;z-index:2147483646;font-family:Arial,sans-serif;pointer-events:auto!important}.gsp-global-btn{height:36px;padding:0 14px 0 10px;border:1px solid #dadce0;border-radius:19px;background:#fff;color:#3c4043;box-shadow:0 2px 8px rgba(60,64,67,.18);cursor:pointer;display:flex;align-items:center;gap:7px;font:12px Arial,sans-serif}.gsp-global-btn:hover{background:#f8f9fa;box-shadow:0 3px 10px rgba(60,64,67,.24)}.gsp-global-btn svg{width:18px;height:18px;fill:currentColor;pointer-events:none}
     `;
     document.head.appendChild(style);
   }
 
-  function stopPropagationOnly(event) {
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-  }
-
-  function stopAction(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-  }
+  function stopPropagationOnly(event) { event.stopPropagation(); event.stopImmediatePropagation(); }
+  function stopAction(event) { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); }
 
   function makeButton(kind, title, handler) {
     const button = document.createElement('button');
@@ -215,56 +203,36 @@
     button.setAttribute('aria-label', title);
     button.addEventListener('pointerdown', stopPropagationOnly, true);
     button.addEventListener('mousedown', stopPropagationOnly, true);
-    button.addEventListener('click', async (event) => {
-      stopAction(event);
-      if (!button.disabled) await handler(button);
-    }, true);
+    button.addEventListener('click', async (event) => { stopAction(event); if (!button.disabled) await handler(button); }, true);
     return button;
   }
 
-  function escapeGmailSearchValue(value) {
-    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  }
-
-  function escapeMarkdownLabel(value) {
-    return value.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
-  }
-
-  function escapeMarkdownText(value) {
-    return cleanText(value).replace(/\\/g, '\\\\').replace(/([*_`#])/g, '\\$1').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
-  }
+  function escapeGmailSearchValue(value) { return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+  function escapeMarkdownLabel(value) { return value.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]'); }
+  function escapeMarkdownText(value) { return cleanText(value).replace(/\\/g, '\\\\').replace(/([*_`#])/g, '\\$1').replace(/\[/g, '\\[').replace(/\]/g, '\\]'); }
 
   function buildGmailSearch(subject) {
     const query = `subject:"${escapeGmailSearchValue(subject)}"`;
     const url = `https://mail.google.com/mail/#search/${encodeURIComponent(query)}`;
-    return {url, markdown: `[email: ${escapeMarkdownLabel(subject)}](${url})`};
+    return {url, markdown:`[email: ${escapeMarkdownLabel(subject)}](${url})`};
   }
 
   async function copyText(text) {
     if (typeof GM_setClipboard === 'function') return GM_setClipboard(text, 'text');
     if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
     const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand('copy');
-    textarea.remove();
+    textarea.value = text; textarea.style.position = 'fixed'; textarea.style.opacity = '0';
+    document.body.appendChild(textarea); textarea.select();
+    const ok = document.execCommand('copy'); textarea.remove();
     if (!ok) throw new Error('Clipboard non disponibile');
   }
 
   function showToast(message, isError = false) {
     document.getElementById(TOAST_ID)?.remove();
     const toast = document.createElement('div');
-    toast.id = TOAST_ID;
-    toast.textContent = message;
-    Object.assign(toast.style, {
-      position:'fixed',right:'24px',bottom:'70px',zIndex:'2147483647',maxWidth:'440px',padding:'10px 14px',borderRadius:'8px',
-      background:isError?'#b3261e':'#202124',color:'#fff',font:'13px/1.4 Arial,sans-serif',boxShadow:'0 4px 18px rgba(0,0,0,.25)'
-    });
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 2200);
+    toast.id = TOAST_ID; toast.textContent = message;
+    Object.assign(toast.style, {position:'fixed',right:'24px',bottom:'72px',zIndex:'2147483647',maxWidth:'440px',padding:'10px 14px',borderRadius:'8px',background:isError?'#b3261e':'#202124',color:'#fff',font:'13px/1.4 Arial,sans-serif',boxShadow:'0 4px 18px rgba(0,0,0,.25)'});
+    document.body.appendChild(toast); setTimeout(() => toast.remove(), 2200);
   }
 
   function openDatabase() {
@@ -274,6 +242,7 @@
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, {keyPath:'key'});
+        if (!db.objectStoreNames.contains(DEADLINE_STORE)) db.createObjectStore(DEADLINE_STORE, {keyPath:'key'});
         if (!db.objectStoreNames.contains(CASE_STORE)) db.createObjectStore(CASE_STORE, {keyPath:'id'});
         if (!db.objectStoreNames.contains(MEMBER_STORE)) {
           const store = db.createObjectStore(MEMBER_STORE, {keyPath:'memberKey'});
@@ -293,8 +262,7 @@
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readonly').objectStore(storeName).get(key);
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result || null); request.onerror = () => reject(request.error);
     });
   }
 
@@ -302,8 +270,7 @@
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result || []); request.onerror = () => reject(request.error);
     });
   }
 
@@ -311,8 +278,7 @@
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value);
-      request.onsuccess = () => resolve(value);
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(value); request.onerror = () => reject(request.error);
     });
   }
 
@@ -320,32 +286,34 @@
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(); request.onerror = () => reject(request.error);
     });
   }
 
-  function invalidateCache() {
-    cachePromise = null;
-  }
+  function invalidateCache() { cachePromise = null; }
 
   async function loadCache(force = false) {
     if (force) invalidateCache();
     if (cachePromise) return cachePromise;
     cachePromise = (async () => {
-      const [notes, cases, members] = await Promise.all([storeGetAll(NOTE_STORE), storeGetAll(CASE_STORE), storeGetAll(MEMBER_STORE)]);
+      const [notes, deadlines, cases, members] = await Promise.all([
+        storeGetAll(NOTE_STORE), storeGetAll(DEADLINE_STORE), storeGetAll(CASE_STORE), storeGetAll(MEMBER_STORE)
+      ]);
       const account = getAccountScope();
       const next = emptyCache();
-
       for (const record of notes) {
         if (!record?.key?.startsWith(`${account}:`) || !cleanText(record.text)) continue;
         next.notesByKey.set(record.key, record);
         const subject = normalizeSubject(record.subject);
         if (subject) next.notesBySubject.set(subject, [...(next.notesBySubject.get(subject) || []), record]);
       }
-      for (const record of cases) {
-        if (record?.account === account) next.casesById.set(record.id, record);
+      for (const record of deadlines) {
+        if (!record?.key?.startsWith(`${account}:`) || !/^\d{4}-\d{2}-\d{2}$/.test(record.dueDate || '')) continue;
+        next.deadlinesByKey.set(record.key, record);
+        const subject = normalizeSubject(record.subject);
+        if (subject) next.deadlinesBySubject.set(subject, [...(next.deadlinesBySubject.get(subject) || []), record]);
       }
+      for (const record of cases) if (record?.account === account) next.casesById.set(record.id, record);
       for (const record of members) {
         if (record?.account !== account) continue;
         next.membersByKey.set(record.memberKey, record);
@@ -365,23 +333,26 @@
     return storePut(NOTE_STORE, {key, subject, text:value, updatedAt:new Date().toISOString()});
   }
 
-  function newCaseId() {
-    return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  async function saveDeadline(key, subject, dueDate) {
+    const value = cleanText(dueDate);
+    if (!value) return storeDelete(DEADLINE_STORE, key);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error('Data non valida');
+    return storePut(DEADLINE_STORE, {key, subject, dueDate:value, updatedAt:new Date().toISOString()});
   }
+
+  function newCaseId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 
   async function createCase(name) {
     const value = cleanText(name);
     if (!value) throw new Error('Nome caso vuoto');
     const now = new Date().toISOString();
     const record = {id:newCaseId(), account:getAccountScope(), name:value, status:'', createdAt:now, updatedAt:now};
-    await storePut(CASE_STORE, record);
-    return record;
+    await storePut(CASE_STORE, record); return record;
   }
 
   async function saveCaseStatus(group, status) {
     const next = {...group, status:cleanText(status), updatedAt:new Date().toISOString()};
-    await storePut(CASE_STORE, next);
-    return next;
+    await storePut(CASE_STORE, next); return next;
   }
 
   function currentConversation(subject) {
@@ -396,9 +367,7 @@
     await storePut(MEMBER_STORE, {...current, groupId});
   }
 
-  async function unlinkMembership(memberKey) {
-    await storeDelete(MEMBER_STORE, memberKey);
-  }
+  async function unlinkMembership(memberKey) { await storeDelete(MEMBER_STORE, memberKey); }
 
   function findBySubjectUnique(map, subject) {
     const bucket = map.get(normalizeSubject(subject)) || [];
@@ -407,31 +376,55 @@
 
   function findNoteForRow(row, subject) {
     const threadId = getRowThreadId(row);
-    const exact = threadId ? cache.notesByKey.get(buildEntityKey(subject, threadId)) : null;
-    return exact || findBySubjectUnique(cache.notesBySubject, subject);
+    return (threadId ? cache.notesByKey.get(buildEntityKey(subject, threadId)) : null) || findBySubjectUnique(cache.notesBySubject, subject);
+  }
+
+  function findDeadlineForRow(row, subject) {
+    const threadId = getRowThreadId(row);
+    return (threadId ? cache.deadlinesByKey.get(buildEntityKey(subject, threadId)) : null) || findBySubjectUnique(cache.deadlinesBySubject, subject);
   }
 
   function findMemberForRow(row, subject) {
     const threadId = getRowThreadId(row);
-    const exact = threadId ? cache.membersByKey.get(buildEntityKey(subject, threadId)) : null;
-    return exact || findBySubjectUnique(cache.membersBySubject, subject);
+    return (threadId ? cache.membersByKey.get(buildEntityKey(subject, threadId)) : null) || findBySubjectUnique(cache.membersBySubject, subject);
   }
 
-  function findNoteForMember(member) {
-    return cache.notesByKey.get(member.memberKey) || findBySubjectUnique(cache.notesBySubject, member.subject);
+  function findNoteForKey(key, subject) { return cache.notesByKey.get(key) || findBySubjectUnique(cache.notesBySubject, subject); }
+  function findDeadlineForKey(key, subject) { return cache.deadlinesByKey.get(key) || findBySubjectUnique(cache.deadlinesBySubject, subject); }
+  function findMemberForKey(key, subject) { return cache.membersByKey.get(key) || findBySubjectUnique(cache.membersBySubject, subject); }
+  function findNoteForMember(member) { return findNoteForKey(member.memberKey, member.subject); }
+  function findDeadlineForMember(member) { return findDeadlineForKey(member.memberKey, member.subject); }
+  function findMemberForNote(note) { return findMemberForKey(note.key, note.subject); }
+
+  function localDateIso(date = new Date()) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
-  function findMemberForNote(note) {
-    return cache.membersByKey.get(note.key) || findBySubjectUnique(cache.membersBySubject, note.subject);
+  function addDaysIso(days) {
+    const d = new Date(); d.setHours(12,0,0,0); d.setDate(d.getDate() + days); return localDateIso(d);
   }
 
-  function renderChip(row, className, text, title) {
+  function formatDate(iso) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso || '')) return '';
+    return new Date(`${iso}T12:00:00`).toLocaleDateString('it-IT', {day:'2-digit', month:'2-digit', year:'numeric'});
+  }
+
+  function dueClass(iso) {
+    const today = localDateIso();
+    if (iso < today) return 'overdue';
+    if (iso === today) return 'today';
+    return 'future';
+  }
+
+  function renderChip(row, className, text, title, extraClass = '') {
     const existing = row.querySelector(`.${className}`);
     if (!text) { existing?.remove(); return; }
-    const host = findRowHost(row);
-    if (!host) return;
+    const host = findRowHost(row); if (!host) return;
     const chip = existing || document.createElement('span');
-    chip.className = className;
+    chip.className = `${className}${extraClass ? ` ${extraClass}` : ''}`;
     if (chip.textContent !== text) chip.textContent = text;
     chip.title = title || text;
     if (!existing) {
@@ -446,23 +439,15 @@
       const subject = cleanText(getSubject());
       if (!subject) return showToast('Oggetto email non trovato.', true);
       const search = buildGmailSearch(subject);
-      try {
-        await copyText(isMarkdown ? search.markdown : search.url);
-        showToast(isMarkdown ? 'Markdown copiato' : 'URL Gmail Search copiato');
-      } catch (error) {
-        console.error('[Gmail Superpowers] Clipboard error:', error);
-        showToast('Non riesco a copiare negli appunti.', true);
-      }
+      try { await copyText(isMarkdown ? search.markdown : search.url); showToast(isMarkdown ? 'Markdown copiato' : 'URL Gmail Search copiato'); }
+      catch (error) { console.error('[Gmail Superpowers] Clipboard error:', error); showToast('Non riesco a copiare negli appunti.', true); }
     });
   }
 
   function enhanceMailRow(row) {
-    const subject = getRowSubject(row);
-    const host = subject && findRowHost(row);
-    if (!host) return;
+    const subject = getRowSubject(row); const host = subject && findRowHost(row); if (!host) return;
     if (!row.querySelector(`.${ROW_ACTIONS}`)) {
-      const actions = document.createElement('span');
-      actions.className = ROW_ACTIONS;
+      const actions = document.createElement('span'); actions.className = ROW_ACTIONS;
       actions.appendChild(makeCopyButton('url', () => getRowSubject(row)));
       actions.appendChild(makeCopyButton('markdown', () => getRowSubject(row)));
       host.appendChild(actions);
@@ -474,18 +459,17 @@
       await loadCache(force);
       for (const row of document.querySelectorAll('tr.zA')) {
         enhanceMailRow(row);
-        const subject = getRowSubject(row);
-        if (!subject) continue;
+        const subject = getRowSubject(row); if (!subject) continue;
         const note = findNoteForRow(row, subject);
         renderChip(row, ROW_NOTE, cleanText(note?.text) ? `Stato: ${cleanText(note.text)}` : '', cleanText(note?.text));
-        const member = findMemberForRow(row, subject);
-        const group = member ? cache.casesById.get(member.groupId) : null;
+        const deadline = findDeadlineForRow(row, subject);
+        const due = cleanText(deadline?.dueDate);
+        renderChip(row, ROW_DUE, due ? `Scade: ${formatDate(due)}` : '', due ? `Scadenza: ${formatDate(due)}` : '', due ? `gsp-due-${dueClass(due)}` : '');
+        const member = findMemberForRow(row, subject); const group = member ? cache.casesById.get(member.groupId) : null;
         const caseText = group ? `Caso: ${group.name}${cleanText(group.status) ? ` · ${cleanText(group.status)}` : ''}` : '';
         renderChip(row, ROW_CASE, caseText, caseText);
       }
-    } catch (error) {
-      console.error('[Gmail Superpowers] Row refresh error:', error);
-    }
+    } catch (error) { console.error('[Gmail Superpowers] Row refresh error:', error); }
   }
 
   function enhanceOpenActions() {
@@ -494,540 +478,267 @@
     const existing = document.getElementById(OPEN_ACTIONS_ID);
     if (existing?.previousElementSibling === subjectElement) return;
     existing?.remove();
-    const actions = document.createElement('span');
-    actions.id = OPEN_ACTIONS_ID;
+    const actions = document.createElement('span'); actions.id = OPEN_ACTIONS_ID;
     actions.appendChild(makeCopyButton('url', () => cleanText(subjectElement.textContent)));
     actions.appendChild(makeCopyButton('markdown', () => cleanText(subjectElement.textContent)));
     actions.appendChild(makeButton('case', 'Collega questa conversazione a un caso', async () => toggleCasePicker(subjectElement)));
     subjectElement.insertAdjacentElement('afterend', actions);
   }
 
-  function createTextInput(placeholder) {
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'gsp-input';
-    input.placeholder = placeholder;
-    input.autocomplete = 'off';
-    input.addEventListener('pointerdown', stopPropagationOnly, true);
-    input.addEventListener('mousedown', stopPropagationOnly, true);
-    input.addEventListener('click', stopPropagationOnly, true);
+  function createTextInput(placeholder, type = 'text') {
+    const input = document.createElement('input'); input.type = type; input.className = 'gsp-input'; input.placeholder = placeholder; input.autocomplete = 'off';
+    input.addEventListener('pointerdown', stopPropagationOnly, true); input.addEventListener('mousedown', stopPropagationOnly, true); input.addEventListener('click', stopPropagationOnly, true);
     return input;
   }
 
-  function getOpenSubjectHost(subjectElement) {
-    return subjectElement.closest('.ha') || subjectElement.parentElement;
-  }
+  function getOpenSubjectHost(subjectElement) { return subjectElement.closest('.ha') || subjectElement.parentElement; }
 
   async function enhanceOpenNote() {
     const subjectElement = findOpenMailSubjectElement();
     if (!subjectElement) { document.getElementById(NOTE_PANEL_ID)?.remove(); return; }
-    const subject = cleanText(subjectElement.textContent);
-    const key = buildEntityKey(subject);
-    const existing = document.getElementById(NOTE_PANEL_ID);
-    if (existing?.dataset.key === key) return;
-    existing?.remove();
-
-    const panel = document.createElement('div');
-    panel.id = NOTE_PANEL_ID;
-    panel.dataset.key = key;
-    const label = document.createElement('span');
-    label.className = 'gsp-label';
-    label.textContent = 'Stato';
-    const input = createTextInput('Es. Aspetto risposta da X e Y');
-    input.dataset.saved = '';
+    const subject = cleanText(subjectElement.textContent); const key = buildEntityKey(subject);
+    const existing = document.getElementById(NOTE_PANEL_ID); if (existing?.dataset.key === key) return; existing?.remove();
+    const panel = document.createElement('div'); panel.id = NOTE_PANEL_ID; panel.dataset.key = key;
+    const label = document.createElement('span'); label.className = 'gsp-label'; label.textContent = 'Stato';
+    const input = createTextInput('Es. Aspetto risposta da X e Y'); input.dataset.saved = '';
 
     async function persist(showMessage) {
-      const value = cleanText(input.value);
-      if (value === (input.dataset.saved || '')) return;
-      try {
-        await saveNote(key, subject, value);
-        input.value = value;
-        input.dataset.saved = value;
-        deleteButton.disabled = !value;
-        invalidateCache();
-        void refreshRows(true);
-        if (showMessage) showToast(value ? 'Stato salvato' : 'Stato eliminato');
-      } catch (error) {
-        console.error('[Gmail Superpowers] Note save error:', error);
-        showToast('Non riesco a salvare lo stato.', true);
-      }
+      const value = cleanText(input.value); if (value === (input.dataset.saved || '')) return;
+      try { await saveNote(key, subject, value); input.value = value; input.dataset.saved = value; deleteButton.disabled = !value; invalidateCache(); void refreshRows(true); if (showMessage) showToast(value ? 'Stato salvato' : 'Stato eliminato'); }
+      catch (error) { console.error('[Gmail Superpowers] Note save error:', error); showToast('Non riesco a salvare lo stato.', true); }
     }
 
     const saveButton = makeButton('save', 'Salva stato', () => persist(true));
-    const deleteButton = makeButton('trash', 'Cancella stato', async () => {
-      await storeDelete(NOTE_STORE, key);
-      input.value = '';
-      input.dataset.saved = '';
-      deleteButton.disabled = true;
-      invalidateCache();
-      void refreshRows(true);
-      showToast('Stato eliminato');
-    });
+    const deleteButton = makeButton('trash', 'Cancella stato', async () => { await storeDelete(NOTE_STORE, key); input.value=''; input.dataset.saved=''; deleteButton.disabled=true; invalidateCache(); void refreshRows(true); showToast('Stato eliminato'); });
     deleteButton.disabled = true;
-
-    input.addEventListener('keydown', async (event) => {
-      event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); await persist(true); input.blur(); }
-      else if (event.key === 'Escape') { event.preventDefault(); input.value = input.dataset.saved || ''; input.blur(); }
-    });
+    input.addEventListener('keydown', async (event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); await persist(true); input.blur(); } else if (event.key === 'Escape') { event.preventDefault(); input.value=input.dataset.saved || ''; input.blur(); } });
     input.addEventListener('blur', () => persist(false));
     panel.append(label, input, saveButton, deleteButton);
-    const host = getOpenSubjectHost(subjectElement);
-    if (!host) return;
-    host.insertAdjacentElement('afterend', panel);
+    const host = getOpenSubjectHost(subjectElement); if (!host) return; host.insertAdjacentElement('afterend', panel);
+    try { const record = await storeGet(NOTE_STORE, key); if (!document.contains(panel)) return; const value = cleanText(record?.text); input.value=value; input.dataset.saved=value; deleteButton.disabled=!value; }
+    catch (error) { console.error('[Gmail Superpowers] Note load error:', error); }
+  }
 
-    try {
-      const record = await storeGet(NOTE_STORE, key);
-      if (!document.contains(panel)) return;
-      const value = cleanText(record?.text);
-      input.value = value;
-      input.dataset.saved = value;
-      deleteButton.disabled = !value;
-    } catch (error) {
-      console.error('[Gmail Superpowers] Note load error:', error);
+  async function enhanceOpenDeadline() {
+    const subjectElement = findOpenMailSubjectElement();
+    if (!subjectElement) { document.getElementById(DUE_PANEL_ID)?.remove(); return; }
+    const subject = cleanText(subjectElement.textContent); const key = buildEntityKey(subject);
+    const existing = document.getElementById(DUE_PANEL_ID); if (existing?.dataset.key === key) return; existing?.remove();
+    const panel = document.createElement('div'); panel.id = DUE_PANEL_ID; panel.dataset.key = key;
+    const label = document.createElement('span'); label.className = 'gsp-label'; label.textContent = 'Scadenza';
+    const input = createTextInput('', 'date'); input.classList.add('gsp-date-input'); input.dataset.saved = '';
+
+    async function persist(showMessage) {
+      const value = input.value || ''; if (value === (input.dataset.saved || '')) return;
+      try { await saveDeadline(key, subject, value); input.dataset.saved=value; clearButton.disabled=!value; invalidateCache(); void refreshRows(true); if (showMessage) showToast(value ? 'Scadenza salvata' : 'Scadenza rimossa'); }
+      catch (error) { console.error('[Gmail Superpowers] Deadline save error:', error); showToast('Non riesco a salvare la scadenza.', true); }
     }
+
+    const saveButton = makeButton('save', 'Salva scadenza', () => persist(true));
+    const clearButton = makeButton('trash', 'Rimuovi scadenza', async () => { await storeDelete(DEADLINE_STORE, key); input.value=''; input.dataset.saved=''; clearButton.disabled=true; invalidateCache(); void refreshRows(true); showToast('Scadenza rimossa'); });
+    clearButton.disabled = true;
+    input.addEventListener('change', () => persist(false));
+    input.addEventListener('keydown', async (event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); await persist(true); input.blur(); } else if (event.key === 'Escape') { event.preventDefault(); input.value=input.dataset.saved || ''; input.blur(); } });
+    panel.append(label, input, saveButton, clearButton);
+    const notePanel = document.getElementById(NOTE_PANEL_ID); const host = notePanel || getOpenSubjectHost(subjectElement); if (!host) return; host.insertAdjacentElement('afterend', panel);
+    try { const record = await storeGet(DEADLINE_STORE, key); if (!document.contains(panel)) return; const value = cleanText(record?.dueDate); input.value=value; input.dataset.saved=value; clearButton.disabled=!value; }
+    catch (error) { console.error('[Gmail Superpowers] Deadline load error:', error); }
   }
 
-  function memberNavigationUrl(member) {
-    return member.url || buildGmailSearch(member.subject || '').url;
-  }
+  function memberNavigationUrl(member) { return member.url || buildGmailSearch(member.subject || '').url; }
 
   async function enhanceCasePanel(force = false) {
     const subjectElement = findOpenMailSubjectElement();
-    if (!subjectElement) {
-      document.getElementById(CASE_PANEL_ID)?.remove();
-      document.getElementById(CASE_PICKER_ID)?.remove();
-      return;
-    }
-    const subject = cleanText(subjectElement.textContent);
-    const memberKey = buildEntityKey(subject);
-    await loadCache(force);
+    if (!subjectElement) { document.getElementById(CASE_PANEL_ID)?.remove(); document.getElementById(CASE_PICKER_ID)?.remove(); return; }
+    const subject = cleanText(subjectElement.textContent); const memberKey = buildEntityKey(subject); await loadCache(force);
     const membership = cache.membersByKey.get(memberKey) || findBySubjectUnique(cache.membersBySubject, subject);
     const group = membership ? cache.casesById.get(membership.groupId) : null;
     const existing = document.getElementById(CASE_PANEL_ID);
     if (!group) { existing?.remove(); return; }
     if (existing?.dataset.groupId === group.id && existing?.dataset.memberKey === membership.memberKey && !force) return;
     existing?.remove();
-
-    const panel = document.createElement('div');
-    panel.id = CASE_PANEL_ID;
-    panel.dataset.groupId = group.id;
-    panel.dataset.memberKey = membership.memberKey;
-    const title = document.createElement('span');
-    title.className = 'gsp-case-title';
-    title.textContent = `Caso: ${group.name}`;
-    const status = createTextInput('Stato del caso');
-    status.classList.add('gsp-case-status');
-    status.value = cleanText(group.status);
-    status.dataset.saved = status.value;
+    const panel = document.createElement('div'); panel.id = CASE_PANEL_ID; panel.dataset.groupId=group.id; panel.dataset.memberKey=membership.memberKey;
+    const title = document.createElement('span'); title.className='gsp-case-title'; title.textContent=`Caso: ${group.name}`;
+    const status = createTextInput('Stato del caso'); status.classList.add('gsp-case-status'); status.value=cleanText(group.status); status.dataset.saved=status.value;
 
     async function persistStatus(showMessage) {
-      const value = cleanText(status.value);
-      if (value === (status.dataset.saved || '')) return;
-      try {
-        const updated = await saveCaseStatus(group, value);
-        status.value = updated.status;
-        status.dataset.saved = updated.status;
-        invalidateCache();
-        void refreshRows(true);
-        if (showMessage) showToast('Stato del caso salvato');
-      } catch (error) {
-        console.error('[Gmail Superpowers] Case status error:', error);
-        showToast('Non riesco a salvare lo stato del caso.', true);
-      }
+      const value = cleanText(status.value); if (value === (status.dataset.saved || '')) return;
+      try { const updated=await saveCaseStatus(group,value); status.value=updated.status; status.dataset.saved=updated.status; invalidateCache(); void refreshRows(true); if (showMessage) showToast('Stato del caso salvato'); }
+      catch (error) { console.error('[Gmail Superpowers] Case status error:', error); showToast('Non riesco a salvare lo stato del caso.', true); }
     }
 
-    status.addEventListener('keydown', async (event) => {
-      event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); await persistStatus(true); status.blur(); }
-      else if (event.key === 'Escape') { event.preventDefault(); status.value = status.dataset.saved || ''; status.blur(); }
-    });
+    status.addEventListener('keydown', async (event) => { event.stopPropagation(); if (event.key==='Enter') { event.preventDefault(); await persistStatus(true); status.blur(); } else if (event.key==='Escape') { event.preventDefault(); status.value=status.dataset.saved || ''; status.blur(); } });
     status.addEventListener('blur', () => persistStatus(false));
-
-    const manageButton = makeButton('case', 'Cambia caso', () => toggleCasePicker(subjectElement, true));
-    const unlinkButton = makeButton('close', 'Scollega questa conversazione dal caso', async () => {
-      try {
-        await unlinkMembership(membership.memberKey);
-        invalidateCache();
-        document.getElementById(CASE_PICKER_ID)?.remove();
-        await refreshAll(true);
-        showToast('Conversazione scollegata dal caso');
-      } catch (error) {
-        console.error('[Gmail Superpowers] Unlink error:', error);
-        showToast('Non riesco a scollegare la conversazione.', true);
-      }
-    });
-    panel.append(title, status, manageButton, unlinkButton);
-
-    const members = document.createElement('ul');
-    members.className = 'gsp-members';
+    const manageButton = makeButton('case','Cambia caso',() => toggleCasePicker(subjectElement,true));
+    const unlinkButton = makeButton('close','Scollega questa conversazione dal caso',async () => { try { await unlinkMembership(membership.memberKey); invalidateCache(); document.getElementById(CASE_PICKER_ID)?.remove(); await refreshAll(true); showToast('Conversazione scollegata dal caso'); } catch (error) { console.error('[Gmail Superpowers] Unlink error:', error); showToast('Non riesco a scollegare la conversazione.', true); } });
+    panel.append(title,status,manageButton,unlinkButton);
+    const members=document.createElement('ul'); members.className='gsp-members';
     for (const member of cache.membersByCase.get(group.id) || []) {
-      const item = document.createElement('li');
-      const link = document.createElement('a');
-      link.href = memberNavigationUrl(member);
-      link.textContent = member.subject || 'Conversazione';
-      link.title = member.subject || '';
-      if (member.memberKey === membership.memberKey) link.textContent += ' (questa)';
-      item.appendChild(link);
+      const item=document.createElement('li'); const link=document.createElement('a'); link.href=memberNavigationUrl(member); link.textContent=member.subject || 'Conversazione'; link.title=member.subject || ''; if (member.memberKey===membership.memberKey) link.textContent += ' (questa)'; item.appendChild(link);
+      const due=findDeadlineForMember(member); if (due?.dueDate) item.appendChild(document.createTextNode(` · scade ${formatDate(due.dueDate)}`));
       members.appendChild(item);
     }
     panel.appendChild(members);
-    const notePanel = document.getElementById(NOTE_PANEL_ID);
-    const host = notePanel || getOpenSubjectHost(subjectElement);
-    if (host) host.insertAdjacentElement('afterend', panel);
+    const duePanel=document.getElementById(DUE_PANEL_ID); const notePanel=document.getElementById(NOTE_PANEL_ID); const host=duePanel || notePanel || getOpenSubjectHost(subjectElement); if (host) host.insertAdjacentElement('afterend',panel);
   }
 
   async function toggleCasePicker(subjectElement, forceOpen = false) {
-    const existing = document.getElementById(CASE_PICKER_ID);
-    if (existing && !forceOpen) { existing.remove(); return; }
-    existing?.remove();
-    const subject = cleanText(subjectElement.textContent);
-    await loadCache();
-
-    const picker = document.createElement('div');
-    picker.id = CASE_PICKER_ID;
-    const label = document.createElement('span');
-    label.className = 'gsp-label';
-    label.textContent = 'Collega a caso';
-    picker.appendChild(label);
-    const list = document.createElement('div');
-    list.className = 'gsp-picker-list';
-    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
-
-    if (!groups.length) {
-      const muted = document.createElement('div');
-      muted.className = 'gsp-muted';
-      muted.textContent = 'Nessun caso esistente. Creane uno qui sotto.';
-      list.appendChild(muted);
-    }
-
+    const existing=document.getElementById(CASE_PICKER_ID); if (existing && !forceOpen) { existing.remove(); return; } existing?.remove();
+    const subject=cleanText(subjectElement.textContent); await loadCache();
+    const picker=document.createElement('div'); picker.id=CASE_PICKER_ID;
+    const label=document.createElement('span'); label.className='gsp-label'; label.textContent='Collega a caso'; picker.appendChild(label);
+    const list=document.createElement('div'); list.className='gsp-picker-list'; const groups=[...cache.casesById.values()].sort((a,b)=>a.name.localeCompare(b.name,'it'));
+    if (!groups.length) { const muted=document.createElement('div'); muted.className='gsp-muted'; muted.textContent='Nessun caso esistente. Creane uno qui sotto.'; list.appendChild(muted); }
     for (const group of groups) {
-      const choice = document.createElement('button');
-      choice.type = 'button';
-      choice.className = 'gsp-case-choice';
-      choice.textContent = group.name;
-      choice.addEventListener('click', async (event) => {
-        stopAction(event);
-        try {
-          await linkCurrentConversation(group.id, subject);
-          picker.remove();
-          invalidateCache();
-          await refreshAll(true);
-          showToast(`Collegata al caso: ${group.name}`);
-        } catch (error) {
-          console.error('[Gmail Superpowers] Link error:', error);
-          showToast('Non riesco a collegare la conversazione.', true);
-        }
-      }, true);
+      const choice=document.createElement('button'); choice.type='button'; choice.className='gsp-case-choice'; choice.textContent=group.name;
+      choice.addEventListener('click', async (event) => { stopAction(event); try { await linkCurrentConversation(group.id,subject); picker.remove(); invalidateCache(); await refreshAll(true); showToast(`Collegata al caso: ${group.name}`); } catch (error) { console.error('[Gmail Superpowers] Link error:', error); showToast('Non riesco a collegare la conversazione.',true); } }, true);
       list.appendChild(choice);
     }
     picker.appendChild(list);
-
-    const newRow = document.createElement('div');
-    newRow.className = 'gsp-picker-new';
-    const input = createTextInput('Nuovo caso, es. Preventivo Rossi');
-    const addButton = makeButton('save', 'Crea caso e collega', async () => {
-      const name = cleanText(input.value);
-      if (!name) { input.focus(); return; }
-      try {
-        const group = await createCase(name);
-        await linkCurrentConversation(group.id, subject);
-        picker.remove();
-        invalidateCache();
-        await refreshAll(true);
-        showToast(`Caso creato: ${group.name}`);
-      } catch (error) {
-        console.error('[Gmail Superpowers] Create case error:', error);
-        showToast('Non riesco a creare il caso.', true);
-      }
-    });
-    input.addEventListener('keydown', (event) => {
-      event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); addButton.click(); }
-      else if (event.key === 'Escape') { event.preventDefault(); picker.remove(); }
-    });
-    newRow.append(input, addButton);
-    picker.appendChild(newRow);
-    const panel = document.getElementById(CASE_PANEL_ID) || document.getElementById(NOTE_PANEL_ID) || getOpenSubjectHost(subjectElement);
-    if (panel) panel.insertAdjacentElement('afterend', picker);
-    input.focus();
+    const newRow=document.createElement('div'); newRow.className='gsp-picker-new'; const input=createTextInput('Nuovo caso, es. Preventivo Rossi');
+    const addButton=makeButton('save','Crea caso e collega',async()=>{ const name=cleanText(input.value); if(!name){input.focus();return;} try { const group=await createCase(name); await linkCurrentConversation(group.id,subject); picker.remove(); invalidateCache(); await refreshAll(true); showToast(`Caso creato: ${group.name}`); } catch(error){ console.error('[Gmail Superpowers] Create case error:',error); showToast('Non riesco a creare il caso.',true); } });
+    input.addEventListener('keydown',(event)=>{ event.stopPropagation(); if(event.key==='Enter'){event.preventDefault();addButton.click();} else if(event.key==='Escape'){event.preventDefault();picker.remove();} });
+    newRow.append(input,addButton); picker.appendChild(newRow);
+    const panel=document.getElementById(CASE_PANEL_ID)||document.getElementById(DUE_PANEL_ID)||document.getElementById(NOTE_PANEL_ID)||getOpenSubjectHost(subjectElement); if(panel) panel.insertAdjacentElement('afterend',picker); input.focus();
   }
 
   function getUngroupedNotes() {
-    return [...cache.notesByKey.values()]
-      .filter((note) => {
-        const member = findMemberForNote(note);
-        return !member || !cache.casesById.has(member.groupId);
-      })
-      .sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
+    return [...cache.notesByKey.values()].filter(note => { const member=findMemberForNote(note); return !member || !cache.casesById.has(member.groupId); }).sort((a,b)=>cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
+  }
+
+  function allDeadlinesSorted() {
+    return [...cache.deadlinesByKey.values()].sort((a,b) => a.dueDate.localeCompare(b.dueDate) || cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
   }
 
   function buildMarkdownExport() {
-    const lines = [];
-    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
-    lines.push('# Gmail Superpowers', '', `Esportato: ${new Date().toLocaleString('it-IT')}`, '', '## Casi', '');
-    if (!groups.length) lines.push('_Nessun caso._', '');
-
-    for (const group of groups) {
-      lines.push(`### ${escapeMarkdownText(group.name)}`, '', `Stato: ${cleanText(group.status) ? escapeMarkdownText(group.status) : '—'}`, '', 'Conversazioni:');
-      const members = [...(cache.membersByCase.get(group.id) || [])].sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
-      if (!members.length) lines.push('- _Nessuna conversazione collegata_');
-      for (const member of members) {
-        const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
-        lines.push(`- ${buildGmailSearch(subject).markdown}`);
-        const note = findNoteForMember(member);
-        if (cleanText(note?.text)) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`);
-      }
+    const lines=[]; const groups=[...cache.casesById.values()].sort((a,b)=>a.name.localeCompare(b.name,'it'));
+    lines.push('# Gmail Superpowers','',`Esportato: ${new Date().toLocaleString('it-IT')}`,'','## Casi','');
+    if(!groups.length) lines.push('_Nessun caso._','');
+    for(const group of groups){
+      lines.push(`### ${escapeMarkdownText(group.name)}`,'',`Stato: ${cleanText(group.status)?escapeMarkdownText(group.status):'—'}`,'','Conversazioni:');
+      const members=[...(cache.membersByCase.get(group.id)||[])].sort((a,b)=>cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
+      if(!members.length) lines.push('- _Nessuna conversazione collegata_');
+      for(const member of members){ const subject=cleanText(member.subject)||'Conversazione senza oggetto'; lines.push(`- ${buildGmailSearch(subject).markdown}`); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(cleanText(note?.text)) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`); if(due?.dueDate) lines.push(`  - Scadenza: ${due.dueDate}`); }
       lines.push('');
     }
-
-    lines.push('## Conversazioni con stato senza caso', '');
-    const ungrouped = getUngroupedNotes();
-    if (!ungrouped.length) lines.push('_Nessuna._');
-    else {
-      for (const note of ungrouped) {
-        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
-        lines.push(`- ${buildGmailSearch(subject).markdown}`, `  - Stato: ${escapeMarkdownText(note.text)}`);
-      }
-    }
+    lines.push('## Conversazioni con stato senza caso',''); const ungrouped=getUngroupedNotes();
+    if(!ungrouped.length) lines.push('_Nessuna._'); else for(const note of ungrouped){ const subject=cleanText(note.subject)||'Conversazione senza oggetto'; lines.push(`- ${buildGmailSearch(subject).markdown}`,`  - Stato: ${escapeMarkdownText(note.text)}`); const due=findDeadlineForKey(note.key,note.subject); if(due?.dueDate) lines.push(`  - Scadenza: ${due.dueDate}`); }
+    lines.push('','## Scadenze',''); const deadlines=allDeadlinesSorted();
+    if(!deadlines.length) lines.push('_Nessuna scadenza._'); else for(const due of deadlines){ const subject=cleanText(due.subject)||'Conversazione senza oggetto'; lines.push(`- ${due.dueDate} — ${buildGmailSearch(subject).markdown}`); const note=findNoteForKey(due.key,due.subject); if(note?.text) lines.push(`  - Stato: ${escapeMarkdownText(note.text)}`); const member=findMemberForKey(due.key,due.subject); const group=member?cache.casesById.get(member.groupId):null; if(group) lines.push(`  - Caso: ${escapeMarkdownText(group.name)}`); }
     return `${lines.join('\n').trim()}\n`;
   }
 
   function downloadMarkdown(markdown) {
-    const date = new Date().toISOString().slice(0, 10);
-    const blob = new Blob([markdown], {type:'text/markdown;charset=utf-8'});
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `gmail-superpowers-${date}.md`;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const date=localDateIso(); const blob=new Blob([markdown],{type:'text/markdown;charset=utf-8'}); const url=URL.createObjectURL(blob); const link=document.createElement('a'); link.href=url; link.download=`gmail-superpowers-${date}.md`; link.style.display='none'; document.body.appendChild(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
-  async function exportMarkdown() {
-    try {
-      await loadCache(true);
-      downloadMarkdown(buildMarkdownExport());
-      showToast('Export Markdown creato');
-    } catch (error) {
-      console.error('[Gmail Superpowers] Export error:', error);
-      showToast('Non riesco a esportare i dati.', true);
-    }
-  }
-
-  function makePreviewLink(subject) {
-    const link = document.createElement('a');
-    link.href = buildGmailSearch(subject).url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = `[email: ${subject}]`;
-    return link;
-  }
-
-  function appendPreviewStatus(parent, text) {
-    const status = document.createElement('div');
-    status.className = 'gsp-preview-status';
-    const strong = document.createElement('strong');
-    strong.textContent = 'Stato: ';
-    status.appendChild(strong);
-    status.appendChild(document.createTextNode(cleanText(text) || '—'));
-    parent.appendChild(status);
-  }
-
-  function buildHtmlPreviewContent(container) {
-    const groups = [...cache.casesById.values()].sort((a,b) => a.name.localeCompare(b.name, 'it'));
-    const casesTitle = document.createElement('h2');
-    casesTitle.textContent = 'Casi';
-    container.appendChild(casesTitle);
-
-    if (!groups.length) {
-      const empty = document.createElement('p');
-      empty.className = 'gsp-preview-empty';
-      empty.textContent = 'Nessun caso.';
-      container.appendChild(empty);
-    }
-
-    for (const group of groups) {
-      const card = document.createElement('section');
-      card.className = 'gsp-preview-case';
-      const title = document.createElement('h3');
-      title.textContent = group.name;
-      card.appendChild(title);
-      appendPreviewStatus(card, group.status);
-
-      const members = [...(cache.membersByCase.get(group.id) || [])].sort((a,b) => cleanText(a.subject).localeCompare(cleanText(b.subject), 'it'));
-      if (!members.length) {
-        const empty = document.createElement('div');
-        empty.className = 'gsp-preview-empty';
-        empty.textContent = 'Nessuna conversazione collegata.';
-        card.appendChild(empty);
-      } else {
-        const list = document.createElement('ul');
-        list.className = 'gsp-preview-list';
-        for (const member of members) {
-          const item = document.createElement('li');
-          const subject = cleanText(member.subject) || 'Conversazione senza oggetto';
-          item.appendChild(makePreviewLink(subject));
-          const note = findNoteForMember(member);
-          if (cleanText(note?.text)) {
-            const noteText = document.createElement('span');
-            noteText.className = 'gsp-preview-note';
-            noteText.textContent = `Stato: ${cleanText(note.text)}`;
-            item.appendChild(noteText);
-          }
-          list.appendChild(item);
-        }
-        card.appendChild(list);
-      }
-      container.appendChild(card);
-    }
-
-    const orphanTitle = document.createElement('h2');
-    orphanTitle.textContent = 'Conversazioni con stato senza caso';
-    container.appendChild(orphanTitle);
-    const ungrouped = getUngroupedNotes();
-    if (!ungrouped.length) {
-      const empty = document.createElement('p');
-      empty.className = 'gsp-preview-empty';
-      empty.textContent = 'Nessuna.';
-      container.appendChild(empty);
-    } else {
-      const list = document.createElement('ul');
-      list.className = 'gsp-preview-list';
-      for (const note of ungrouped) {
-        const item = document.createElement('li');
-        const subject = cleanText(note.subject) || 'Conversazione senza oggetto';
-        item.appendChild(makePreviewLink(subject));
-        const noteText = document.createElement('span');
-        noteText.className = 'gsp-preview-note';
-        noteText.textContent = `Stato: ${cleanText(note.text)}`;
-        item.appendChild(noteText);
-        list.appendChild(item);
-      }
-      container.appendChild(list);
-    }
-  }
-
-  function closeHtmlPreview() {
-    document.getElementById(PREVIEW_MODAL_ID)?.remove();
-  }
-
-  async function showHtmlPreview() {
-    try {
-      await loadCache(true);
-      closeHtmlPreview();
-
-      const overlay = document.createElement('div');
-      overlay.id = PREVIEW_MODAL_ID;
-      const dialog = document.createElement('div');
-      dialog.className = 'gsp-preview-dialog';
-      const header = document.createElement('div');
-      header.className = 'gsp-preview-header';
-      const headingBox = document.createElement('div');
-      headingBox.style.flex = '1';
-      const title = document.createElement('div');
-      title.className = 'gsp-preview-title';
-      title.textContent = 'Anteprima export';
-      const meta = document.createElement('div');
-      meta.className = 'gsp-preview-meta';
-      meta.textContent = `${getAccountScope()} · ${new Date().toLocaleString('it-IT')}`;
-      headingBox.append(title, meta);
-
-      const downloadButton = document.createElement('button');
-      downloadButton.type = 'button';
-      downloadButton.className = 'gsp-preview-action';
-      downloadButton.textContent = 'Scarica MD';
-      downloadButton.addEventListener('click', (event) => {
-        stopAction(event);
-        downloadMarkdown(buildMarkdownExport());
-        showToast('Export Markdown creato');
-      }, true);
-
-      const closeButton = document.createElement('button');
-      closeButton.type = 'button';
-      closeButton.className = 'gsp-preview-close';
-      closeButton.title = 'Chiudi anteprima';
-      closeButton.setAttribute('aria-label', closeButton.title);
-      closeButton.textContent = '×';
-      closeButton.addEventListener('click', (event) => {
-        stopAction(event);
-        closeHtmlPreview();
-      }, true);
-
-      header.append(headingBox, downloadButton, closeButton);
-      const body = document.createElement('div');
-      body.className = 'gsp-preview-body';
-      buildHtmlPreviewContent(body);
-      dialog.append(header, body);
-      overlay.appendChild(dialog);
-      overlay.addEventListener('click', (event) => {
-        if (event.target === overlay) closeHtmlPreview();
-      });
-      overlay.addEventListener('pointerdown', stopPropagationOnly, true);
-      overlay.addEventListener('mousedown', stopPropagationOnly, true);
-      document.body.appendChild(overlay);
-    } catch (error) {
-      console.error('[Gmail Superpowers] Preview error:', error);
-      showToast('Non riesco a creare l’anteprima.', true);
-    }
-  }
-
-  function createGlobalButton(kind, labelText, title, handler) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gsp-global-btn';
-    button.title = title;
-    button.setAttribute('aria-label', title);
-    button.appendChild(createSvgIcon(kind));
-    const label = document.createElement('span');
-    label.textContent = labelText;
-    button.appendChild(label);
-    button.addEventListener('pointerdown', stopPropagationOnly, true);
-    button.addEventListener('mousedown', stopPropagationOnly, true);
-    button.addEventListener('click', async (event) => {
-      stopAction(event);
-      await handler();
-    }, true);
-    return button;
-  }
+  function openAdmin() { window.open(adminUrl(), '_blank', 'noopener'); }
 
   function ensureGlobalTools() {
-    if (document.getElementById(GLOBAL_TOOLS_ID)) return;
-    const tools = document.createElement('div');
-    tools.id = GLOBAL_TOOLS_ID;
-    tools.appendChild(createGlobalButton('preview', 'Anteprima', 'Anteprima HTML di casi, stati e conversazioni', showHtmlPreview));
-    tools.appendChild(createGlobalButton('download', 'Export MD', 'Esporta casi, stati e conversazioni in Markdown', exportMarkdown));
-    document.body.appendChild(tools);
+    if(document.getElementById(GLOBAL_TOOLS_ID)) return;
+    const tools=document.createElement('div'); tools.id=GLOBAL_TOOLS_ID;
+    const button=document.createElement('button'); button.type='button'; button.className='gsp-global-btn'; button.title='Apri Gmail Superpowers Admin'; button.appendChild(createSvgIcon('admin')); const label=document.createElement('span'); label.textContent='Admin'; button.appendChild(label);
+    button.addEventListener('pointerdown',stopPropagationOnly,true); button.addEventListener('mousedown',stopPropagationOnly,true); button.addEventListener('click',(event)=>{stopAction(event);openAdmin();},true);
+    tools.appendChild(button); document.body.appendChild(tools);
+  }
+
+  function adminStyles() {
+    return `:host{all:initial}*{box-sizing:border-box}#app{position:fixed;inset:0;z-index:2147483647;background:#f6f8fc;color:#202124;font-family:Arial,sans-serif;font-size:14px;overflow:auto}header{height:68px;background:#fff;border-bottom:1px solid #e0e0e0;display:flex;align-items:center;padding:0 28px;gap:18px;position:sticky;top:0;z-index:3}.brand{font-size:20px;font-weight:700}.account{font-size:12px;color:#6b7280;flex:1}.close{border:1px solid #dadce0;background:#fff;border-radius:18px;height:34px;padding:0 13px;cursor:pointer}.layout{display:grid;grid-template-columns:210px minmax(0,1fr);min-height:calc(100vh - 68px)}nav{padding:22px 14px;background:#fff;border-right:1px solid #e0e0e0}nav button{width:100%;text-align:left;border:0;background:transparent;border-radius:8px;padding:10px 12px;margin:2px 0;cursor:pointer;font:14px Arial;color:#3c4043}nav button.active,nav button:hover{background:#e8f0fe;color:#174ea6}main{padding:26px 30px 60px;max-width:1180px;width:100%}h1{font-size:24px;margin:0 0 6px}h2{font-size:18px;margin:26px 0 12px}.subtitle{color:#6b7280;margin-bottom:20px}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}.pill,.action{border:1px solid #dadce0;background:#fff;border-radius:18px;height:34px;padding:0 12px;cursor:pointer}.pill.active{background:#e8f0fe;border-color:#aecbfa;color:#174ea6}.action.primary{background:#1a73e8;color:#fff;border-color:#1a73e8}.card{background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:16px;margin-bottom:12px}.row{display:grid;grid-template-columns:150px minmax(260px,1fr) minmax(180px,.8fr) minmax(150px,.6fr);gap:14px;align-items:center;padding:11px 12px;background:#fff;border-bottom:1px solid #eef0f2}.row.header{font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;background:transparent}.row:last-child{border-bottom:0}.date-overdue{color:#b3261e;font-weight:700}.date-today{color:#7a5200;font-weight:700}.date-future{color:#137333}.email{color:#1a73e8;text-decoration:none;font-weight:600}.email:hover{text-decoration:underline}.muted{color:#80868b}.status{color:#4b5563}.case{color:#174ea6}.date-edit{width:145px;height:32px;border:1px solid #dadce0;border-radius:7px;padding:3px 7px;background:#fff}.case-card h3{margin:0 0 6px;font-size:17px}.case-status{width:min(620px,100%);height:34px;border:1px solid #dadce0;border-radius:7px;padding:5px 9px;margin:6px 0 10px}.members{margin:8px 0 0;padding-left:20px}.members li{margin:6px 0}.badge{display:inline-block;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:8px;background:#f1f3f4;color:#5f6368}.export-preview{background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:20px}.export-preview h3{margin:18px 0 6px}.export-preview h3:first-child{margin-top:0}.export-preview ul{padding-left:22px}.export-preview li{margin:6px 0}.empty{padding:24px;background:#fff;border:1px dashed #dadce0;border-radius:12px;color:#80868b;text-align:center}@media(max-width:850px){.layout{grid-template-columns:1fr}nav{display:flex;overflow:auto;border-right:0;border-bottom:1px solid #e0e0e0;padding:8px;position:sticky;top:68px;z-index:2}nav button{width:auto;white-space:nowrap}.row{grid-template-columns:120px 1fr}.row>div:nth-child(n+3){grid-column:2}}`;
+  }
+
+  function aLink(subject) {
+    const a=document.createElement('a'); a.className='email'; a.href=buildGmailSearch(subject).url; a.target='_blank'; a.rel='noopener noreferrer'; a.textContent=subject || 'Conversazione senza oggetto'; return a;
+  }
+
+  function adminEl(tag, className, text) {
+    const el=document.createElement(tag); if(className) el.className=className; if(text !== undefined) el.textContent=text; return el;
+  }
+
+  function adminRelation(key, subject) {
+    const note=findNoteForKey(key,subject); const member=findMemberForKey(key,subject); const group=member?cache.casesById.get(member.groupId):null; return {note,member,group};
+  }
+
+  function deadlineMatchesFilter(dueDate) {
+    const today=localDateIso();
+    if(deadlineFilter==='overdue') return dueDate < today;
+    if(deadlineFilter==='today') return dueDate === today;
+    if(deadlineFilter==='7') return dueDate >= today && dueDate <= addDaysIso(7);
+    if(deadlineFilter==='30') return dueDate >= today && dueDate <= addDaysIso(30);
+    return true;
+  }
+
+  async function renderAdminApp(force = false) {
+    await loadCache(force);
+    let host=document.getElementById(ADMIN_ROOT_ID);
+    if(!host){ host=document.createElement('div'); host.id=ADMIN_ROOT_ID; document.body.appendChild(host); host.attachShadow({mode:'open'}); }
+    const root=host.shadowRoot; root.replaceChildren();
+    const style=document.createElement('style'); style.textContent=adminStyles(); root.appendChild(style);
+    const app=adminEl('div'); app.id='app'; root.appendChild(app);
+    const header=adminEl('header'); const brand=adminEl('div','brand','Gmail Superpowers'); const account=adminEl('div','account',`Admin · ${getAccountScope()} · dati locali del browser`); const close=adminEl('button','close','Chiudi'); close.type='button'; close.addEventListener('click',()=>{ if(window.opener) window.close(); else location.hash='#inbox'; }); header.append(brand,account,close); app.appendChild(header);
+    const layout=adminEl('div','layout'); const nav=adminEl('nav'); const main=adminEl('main'); layout.append(nav,main); app.appendChild(layout);
+    for(const [id,label] of [['deadlines','Scadenze'],['cases','Casi'],['statuses','Stati'],['export','Export']]){ const b=adminEl('button',adminView===id?'active':'',label); b.type='button'; b.addEventListener('click',()=>{adminView=id;void renderAdminApp(false);}); nav.appendChild(b); }
+    if(adminView==='deadlines') renderAdminDeadlines(main); else if(adminView==='cases') renderAdminCases(main); else if(adminView==='statuses') renderAdminStatuses(main); else renderAdminExport(main);
+    document.title='Gmail Superpowers Admin';
+  }
+
+  function renderAdminDeadlines(main) {
+    main.append(adminEl('h1','','Scadenze'),adminEl('div','subtitle','Conversazioni ordinate per data di scadenza. Le modifiche vengono salvate direttamente in IndexedDB.'));
+    const toolbar=adminEl('div','toolbar'); for(const [id,label] of [['all','Tutte'],['overdue','Scadute'],['today','Oggi'],['7','Prossimi 7 giorni'],['30','Prossimi 30 giorni']]){ const b=adminEl('button',`pill${deadlineFilter===id?' active':''}`,label); b.type='button'; b.addEventListener('click',()=>{deadlineFilter=id;void renderAdminApp(false);}); toolbar.appendChild(b); } main.appendChild(toolbar);
+    const records=allDeadlinesSorted().filter(d=>deadlineMatchesFilter(d.dueDate));
+    if(!records.length){ main.appendChild(adminEl('div','empty','Nessuna scadenza in questa vista.')); return; }
+    const table=adminEl('div','card'); const head=adminEl('div','row header'); for(const t of ['Scadenza','Email','Stato','Caso']) head.appendChild(adminEl('div','',t)); table.appendChild(head);
+    for(const due of records){
+      const row=adminEl('div','row'); const dateBox=adminEl('div'); const dateInput=document.createElement('input'); dateInput.type='date'; dateInput.className=`date-edit date-${dueClass(due.dueDate)}`; dateInput.value=due.dueDate; dateInput.title=formatDate(due.dueDate); dateInput.addEventListener('change',async()=>{ await saveDeadline(due.key,due.subject,dateInput.value); invalidateCache(); await renderAdminApp(true); }); dateBox.appendChild(dateInput);
+      const emailBox=adminEl('div'); emailBox.appendChild(aLink(due.subject)); const rel=adminRelation(due.key,due.subject); const status=adminEl('div','status',cleanText(rel.note?.text)||'—'); const caseBox=adminEl('div','case',rel.group?.name||'—'); row.append(dateBox,emailBox,status,caseBox); table.appendChild(row);
+    }
+    main.appendChild(table);
+  }
+
+  function renderAdminCases(main) {
+    main.append(adminEl('h1','','Casi'),adminEl('div','subtitle','Vista amministrativa dei gruppi di conversazioni e del loro stato condiviso.'));
+    const groups=[...cache.casesById.values()].sort((a,b)=>a.name.localeCompare(b.name,'it'));
+    if(!groups.length){ main.appendChild(adminEl('div','empty','Nessun caso creato.')); return; }
+    for(const group of groups){
+      const card=adminEl('section','card case-card'); card.appendChild(adminEl('h3','',group.name)); const status=document.createElement('input'); status.type='text'; status.className='case-status'; status.value=cleanText(group.status); status.placeholder='Stato del caso'; status.addEventListener('change',async()=>{await saveCaseStatus(group,status.value);invalidateCache();}); card.appendChild(status);
+      const list=adminEl('ul','members'); const members=[...(cache.membersByCase.get(group.id)||[])].sort((a,b)=>cleanText(a.subject).localeCompare(cleanText(b.subject),'it'));
+      if(!members.length) list.appendChild(adminEl('li','muted','Nessuna conversazione collegata.'));
+      for(const member of members){ const li=adminEl('li'); li.appendChild(aLink(member.subject)); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`)); if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text))); list.appendChild(li); }
+      card.appendChild(list); main.appendChild(card);
+    }
+  }
+
+  function renderAdminStatuses(main) {
+    main.append(adminEl('h1','','Stati'),adminEl('div','subtitle','Tutte le conversazioni con uno stato salvato, con scadenza e caso quando disponibili.'));
+    const notes=[...cache.notesByKey.values()].sort((a,b)=>{ const da=findDeadlineForKey(a.key,a.subject)?.dueDate||'9999-99-99'; const db=findDeadlineForKey(b.key,b.subject)?.dueDate||'9999-99-99'; return da.localeCompare(db)||cleanText(a.subject).localeCompare(cleanText(b.subject),'it'); });
+    if(!notes.length){ main.appendChild(adminEl('div','empty','Nessuno stato salvato.')); return; }
+    const table=adminEl('div','card'); const head=adminEl('div','row header'); for(const t of ['Scadenza','Email','Stato','Caso']) head.appendChild(adminEl('div','',t)); table.appendChild(head);
+    for(const note of notes){ const due=findDeadlineForKey(note.key,note.subject); const member=findMemberForKey(note.key,note.subject); const group=member?cache.casesById.get(member.groupId):null; const row=adminEl('div','row'); row.append(adminEl('div',due?.dueDate?`date-${dueClass(due.dueDate)}`:'muted',due?.dueDate?formatDate(due.dueDate):'—')); const emailBox=adminEl('div'); emailBox.appendChild(aLink(note.subject)); row.append(emailBox,adminEl('div','status',cleanText(note.text)),adminEl('div','case',group?.name||'—')); table.appendChild(row); }
+    main.appendChild(table);
+  }
+
+  function renderAdminExport(main) {
+    main.append(adminEl('h1','','Export'),adminEl('div','subtitle','Anteprima dei dati e download Markdown con link email portabili.'));
+    const toolbar=adminEl('div','toolbar'); const download=adminEl('button','action primary','Scarica Markdown'); download.type='button'; download.addEventListener('click',()=>downloadMarkdown(buildMarkdownExport())); const copy=adminEl('button','action','Copia Markdown'); copy.type='button'; copy.addEventListener('click',async()=>{await copyText(buildMarkdownExport());}); toolbar.append(download,copy); main.appendChild(toolbar);
+    const preview=adminEl('div','export-preview'); const groups=[...cache.casesById.values()].sort((a,b)=>a.name.localeCompare(b.name,'it'));
+    preview.appendChild(adminEl('h2','','Casi'));
+    if(!groups.length) preview.appendChild(adminEl('div','muted','Nessun caso.'));
+    for(const group of groups){ preview.appendChild(adminEl('h3','',group.name)); preview.appendChild(adminEl('div','status',`Stato: ${cleanText(group.status)||'—'}`)); const ul=adminEl('ul'); for(const member of cache.membersByCase.get(group.id)||[]){ const li=adminEl('li'); li.appendChild(aLink(member.subject)); const note=findNoteForMember(member); const due=findDeadlineForMember(member); if(note?.text) li.appendChild(adminEl('span','badge',cleanText(note.text))); if(due?.dueDate) li.appendChild(adminEl('span',`badge date-${dueClass(due.dueDate)}`,`Scade ${formatDate(due.dueDate)}`)); ul.appendChild(li); } preview.appendChild(ul); }
+    preview.appendChild(adminEl('h2','','Scadenze')); const dueList=adminEl('ul'); for(const due of allDeadlinesSorted()){ const li=adminEl('li'); li.appendChild(adminEl('span',`date-${dueClass(due.dueDate)}`,`${formatDate(due.dueDate)} — `)); li.appendChild(aLink(due.subject)); dueList.appendChild(li); } if(!dueList.childNodes.length) dueList.appendChild(adminEl('li','muted','Nessuna scadenza.')); preview.appendChild(dueList); main.appendChild(preview);
   }
 
   async function refreshAll(force = false) {
-    injectStyles();
-    ensureGlobalTools();
-    document.querySelectorAll('tr.zA').forEach(enhanceMailRow);
-    await refreshRows(force);
-    enhanceOpenActions();
-    await enhanceOpenNote();
-    await enhanceCasePanel(force);
+    injectStyles(); ensureGlobalTools(); document.querySelectorAll('tr.zA').forEach(enhanceMailRow); await refreshRows(force); enhanceOpenActions(); await enhanceOpenNote(); await enhanceOpenDeadline(); await enhanceCasePanel(force);
   }
 
   function scheduleRefresh() {
-    if (refreshTimer) return;
-    refreshTimer = setTimeout(() => {
-      refreshTimer = null;
-      void refreshAll(false);
-    }, 120);
+    if(refreshTimer) return; refreshTimer=setTimeout(()=>{refreshTimer=null;void refreshAll(false);},120);
   }
 
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && document.getElementById(PREVIEW_MODAL_ID)) closeHtmlPreview();
-  }, true);
+  if(isAdminRoute()) {
+    void renderAdminApp(true);
+    return;
+  }
 
-  const observer = new MutationObserver(scheduleRefresh);
-  observer.observe(document.documentElement, {childList:true, subtree:true});
-  window.addEventListener('hashchange', scheduleRefresh);
-  window.addEventListener('popstate', scheduleRefresh);
-  scheduleRefresh();
+  const observer=new MutationObserver(scheduleRefresh); observer.observe(document.documentElement,{childList:true,subtree:true});
+  window.addEventListener('hashchange',scheduleRefresh); window.addEventListener('popstate',scheduleRefresh); scheduleRefresh();
 })();
