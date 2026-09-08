@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gmail Superpowers Sync Bridge
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.3.0
+// @version      0.3.1
 // @description  Read-only bridge: pulls Gmail Superpowers data from the Apps Script Sheet into local IndexedDB. Never uploads local data.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
@@ -218,6 +218,16 @@
     }
   }
 
+  function notifyLocalReaders(recordCount) {
+    const detail = {recordCount, syncedAt: new Date().toISOString()};
+    try {
+      window.dispatchEvent(new CustomEvent('gsp-sync-updated', {detail}));
+    } catch (_) {}
+    try {
+      document.dispatchEvent(new CustomEvent('gsp-sync-updated', {detail}));
+    } catch (_) {}
+  }
+
   async function pullNow(showErrors = false) {
     const current = config();
     if (!current.url || !current.token) return;
@@ -239,6 +249,7 @@
 
       const records = Array.isArray(response.records) ? response.records : [];
       for (const record of records) await applyRemote(record);
+      notifyLocalReaders(records.length);
 
       if (showErrors) {
         console.info(`[Gmail Superpowers Sync] letti ${records.length} record dallo Sheet; nessun dato locale inviato`);
