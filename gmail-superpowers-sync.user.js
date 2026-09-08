@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Gmail Superpowers Sync Bridge
 // @namespace    https://github.com/menteora/gmail-superpowers
-// @version      0.1.0
-// @description  Sync bridge between Gmail Superpowers IndexedDB and the Apps Script add-on storage.
+// @version      0.2.0
+// @description  Bidirectional sync bridge between Gmail Superpowers IndexedDB and the Apps Script add-on Sheet storage.
 // @author       menteora
 // @match        https://mail.google.com/mail/*
 // @grant        GM_getValue
@@ -13,6 +13,8 @@
 // @connect      script.googleusercontent.com
 // @run-at       document-idle
 // @homepageURL  https://github.com/menteora/gmail-superpowers
+// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers-sync.user.js
+// @downloadURL  https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers-sync.user.js
 // ==/UserScript==
 
 (function () {
@@ -20,12 +22,7 @@
 
   const DB_NAME = 'gmail-superpowers';
   const DB_VERSION = 3;
-  const STORES = {
-    note: 'thread-notes',
-    deadline: 'deadlines',
-    case: 'cases',
-    member: 'case-members'
-  };
+  const STORES = {note: 'thread-notes', deadline: 'deadlines', case: 'cases', member: 'case-members'};
   const CONFIG_URL = 'gsp-sync-webapp-url';
   const CONFIG_TOKEN = 'gsp-sync-token';
   const LAST_KEYS = 'gsp-sync-last-keys';
@@ -34,13 +31,12 @@
   let dbPromise = null;
   let syncRunning = false;
   let syncQueued = false;
-  let lastSnapshotSignature = '';
 
   GM_registerMenuCommand('GSP Sync: configura Apps Script', configureSync);
   GM_registerMenuCommand('GSP Sync: sincronizza ora', () => syncNow(true));
-  GM_registerMenuCommand('GSP Sync: cancella configurazione', clearSyncConfig);
+  GM_registerMenuCommand('GSP Sync: cancella configurazione', clearConfig);
 
-  function getAccountScope() {
+  function accountScope() {
     const match = location.pathname.match(/\/mail\/u\/(\d+)\//);
     return match ? `u${match[1]}` : 'u-default';
   }
@@ -62,7 +58,7 @@
     return dbPromise;
   }
 
-  async function storeGetAll(storeName) {
+  async function all(storeName) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
@@ -71,7 +67,7 @@
     });
   }
 
-  async function storeGet(storeName, key) {
+  async function get(storeName, key) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readonly').objectStore(storeName).get(key);
@@ -80,7 +76,7 @@
     });
   }
 
-  async function storePut(storeName, value) {
+  async function put(storeName, value) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value);
@@ -89,7 +85,7 @@
     });
   }
 
-  async function storeDelete(storeName, key) {
+  async function remove(storeName, key) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const request = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key);
@@ -98,7 +94,7 @@
     });
   }
 
-  function currentConfig() {
+  function config() {
     return {
       url: String(GM_getValue(CONFIG_URL, '') || '').trim(),
       token: String(GM_getValue(CONFIG_TOKEN, '') || '').trim()
@@ -106,28 +102,24 @@
   }
 
   function configureSync() {
-    const current = currentConfig();
+    const current = config();
     const url = prompt('URL della Web App Apps Script (/exec)', current.url);
     if (url === null) return;
     const token = prompt('Token bridge mostrato nella home dell add-on', current.token);
     if (token === null) return;
     GM_setValue(CONFIG_URL, String(url).trim());
     GM_setValue(CONFIG_TOKEN, String(token).trim());
-    lastSnapshotSignature = '';
-    alert('Configurazione salvata. Avvio una sincronizzazione.');
     void syncNow(true);
   }
 
-  function clearSyncConfig() {
+  function clearConfig() {
     if (!confirm('Cancellare URL e token del bridge Apps Script?')) return;
     GM_setValue(CONFIG_URL, '');
     GM_setValue(CONFIG_TOKEN, '');
     GM_setValue(LAST_KEYS, '');
-    lastSnapshotSignature = '';
-    alert('Configurazione sync cancellata.');
   }
 
-  function requestJson(url, payload) {
+  function postJson(url, payload) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'POST',
@@ -137,9 +129,9 @@
         timeout: 20000,
         onload(response) {
           try {
-            const data = JSON.parse(response.responseText || '{}');
-            if (!data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-            resolve(data);
+            const result = JSON.parse(response.responseText || '{}');
+            if (!result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            resolve(result);
           } catch (error) {
             reject(error);
           }
@@ -150,16 +142,26 @@
     });
   }
 
-  async function buildLocalRecords() {
-    const account = getAccountScope();
-    const [notes, deadlines, cases, members] = await Promise.all([
-      storeGetAll(STORES.note),
-      storeGetAll(STORES.deadline),
-      storeGetAll(STORES.case),
-      storeGetAll(STORES.member)
-    ]);
+  function threadIdFromKey(key) {
+    const match = String(key || '').match(/:thread:([^:]+)$/);
+    return match ? match[1] : '';
+  }
 
+  function readLastKeys() {
+    try {
+      return JSON.parse(GM_getValue(LAST_KEYS, '') || '{}');
+    } catch (_) {
+      return {};
+    }
+  }
+
+  async function localRecords() {
+    const account = accountScope();
+    const [notes, deadlines, cases, members] = await Promise.all([
+      all(STORES.note), all(STORES.deadline), all(STORES.case), all(STORES.member)
+    ]);
     const records = [];
+
     notes.filter((r) => String(r.key || '').startsWith(`${account}:`)).forEach((r) => records.push({
       type: 'note', key: r.key, account, threadId: threadIdFromKey(r.key), subject: r.subject || '', text: r.text || '', updatedAt: r.updatedAt || ''
     }));
@@ -174,81 +176,62 @@
     }));
 
     const currentKeys = {};
-    for (const record of records) currentKeys[`${record.type}:${record.key}`] = true;
+    records.forEach((record) => currentKeys[`${record.type}:${record.key}`] = true);
     const previousKeys = readLastKeys();
     const now = new Date().toISOString();
-    if (previousKeys) {
-      for (const compositeKey of Object.keys(previousKeys)) {
-        if (currentKeys[compositeKey]) continue;
-        const split = compositeKey.indexOf(':');
-        const type = compositeKey.slice(0, split);
-        const key = compositeKey.slice(split + 1);
-        if (!STORES[type]) continue;
-        records.push({type, key, account, updatedAt: now, deletedAt: now});
-      }
-    }
+    Object.keys(previousKeys).forEach((composite) => {
+      if (currentKeys[composite]) return;
+      const separator = composite.indexOf(':');
+      const type = composite.slice(0, separator);
+      const key = composite.slice(separator + 1);
+      if (STORES[type]) records.push({type, key, account, updatedAt: now, deletedAt: now});
+    });
 
     return {records, currentKeys};
   }
 
-  function readLastKeys() {
-    const raw = GM_getValue(LAST_KEYS, '');
-    if (!raw) return null;
-    try { return JSON.parse(raw); } catch (_) { return null; }
-  }
-
-  function threadIdFromKey(key) {
-    const match = String(key || '').match(/:thread:([^:]+)$/);
-    return match ? match[1] : '';
-  }
-
-  function rebaseKey(key, type) {
-    if (type === 'case') return key;
-    const account = getAccountScope();
-    const value = String(key || '');
-    const threadMatch = value.match(/^(?:[^:]+:)?thread:(.+)$/);
-    if (threadMatch) return `${account}:thread:${threadMatch[1]}`;
-    const subjectMatch = value.match(/^(?:[^:]+:)?subject:(.+)$/);
-    if (subjectMatch) return `${account}:subject:${subjectMatch[1]}`;
+  function localKey(remoteKey, type) {
+    if (type === 'case') return remoteKey;
+    const account = accountScope();
+    const value = String(remoteKey || '');
+    const thread = value.match(/^(?:[^:]+:)?thread:(.+)$/);
+    if (thread) return `${account}:thread:${thread[1]}`;
+    const subject = value.match(/^(?:[^:]+:)?subject:(.+)$/);
+    if (subject) return `${account}:subject:${subject[1]}`;
     return value;
   }
 
   function recordTime(record) {
-    const value = record?.deletedAt || record?.updatedAt || record?.createdAt || '';
-    const time = Date.parse(value);
+    const time = Date.parse(record?.deletedAt || record?.updatedAt || record?.createdAt || '');
     return Number.isFinite(time) ? time : 0;
   }
 
-  async function applyRemoteRecord(record) {
+  async function applyRemote(record) {
     if (!record || !STORES[record.type] || !record.key) return;
-    const account = getAccountScope();
-    const localKey = rebaseKey(record.key, record.type);
-    const storeName = STORES[record.type];
-    const existing = await storeGet(storeName, localKey);
+    const account = accountScope();
+    const key = localKey(record.key, record.type);
+    const store = STORES[record.type];
+    const existing = await get(store, key);
     if (existing && recordTime(existing) > recordTime(record)) return;
-
-    if (record.deletedAt) {
-      await storeDelete(storeName, localKey);
-      return;
-    }
+    if (record.deletedAt) return remove(store, key);
 
     if (record.type === 'note') {
-      if (!String(record.text || '').trim()) return storeDelete(storeName, localKey);
-      return storePut(storeName, {key: localKey, subject: record.subject || '', text: record.text || '', updatedAt: record.updatedAt || new Date().toISOString()});
+      if (!String(record.text || '').trim()) return remove(store, key);
+      return put(store, {key, subject: record.subject || '', text: record.text || '', updatedAt: record.updatedAt || new Date().toISOString()});
     }
     if (record.type === 'deadline') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(record.dueDate || '')) return storeDelete(storeName, localKey);
-      return storePut(storeName, {key: localKey, subject: record.subject || '', dueDate: record.dueDate, updatedAt: record.updatedAt || new Date().toISOString()});
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(record.dueDate || '')) return remove(store, key);
+      return put(store, {key, subject: record.subject || '', dueDate: record.dueDate, updatedAt: record.updatedAt || new Date().toISOString()});
     }
     if (record.type === 'case') {
-      return storePut(storeName, {id: record.key, account, name: record.name || '', status: record.status || '', createdAt: record.createdAt || record.updatedAt || new Date().toISOString(), updatedAt: record.updatedAt || new Date().toISOString()});
+      return put(store, {id: record.key, account, name: record.name || '', status: record.status || '', createdAt: record.createdAt || record.updatedAt || new Date().toISOString(), updatedAt: record.updatedAt || new Date().toISOString()});
     }
     if (record.type === 'member') {
-      if (!String(record.groupId || '').trim()) return storeDelete(storeName, localKey);
-      return storePut(storeName, {
-        memberKey: localKey,
+      if (!String(record.groupId || '').trim()) return remove(store, key);
+      return put(store, {
+        memberKey: key,
         account,
-        threadId: record.threadId || threadIdFromKey(localKey),
+        threadId: record.threadId || threadIdFromKey(key),
         subject: record.subject || '',
         groupId: record.groupId || '',
         url: record.url || '',
@@ -259,36 +242,29 @@
     }
   }
 
-  async function syncNow(force = false) {
-    const config = currentConfig();
-    if (!config.url || !config.token) return;
+  async function syncNow(showErrors = false) {
+    const current = config();
+    if (!current.url || !current.token) return;
     if (syncRunning) {
       syncQueued = true;
       return;
     }
     syncRunning = true;
     try {
-      const local = await buildLocalRecords();
-      const signature = JSON.stringify(local.records.map((record) => [record.type, record.key, record.updatedAt, record.deletedAt || '']));
-      if (!force && signature === lastSnapshotSignature) return;
-
-      const response = await requestJson(config.url, {
+      const local = await localRecords();
+      const response = await postJson(current.url, {
         action: 'sync',
-        token: config.token,
-        clientScope: getAccountScope(),
+        token: current.token,
+        clientScope: accountScope(),
         records: local.records
       });
-
-      const remote = Array.isArray(response.records) ? response.records : [];
-      for (const record of remote) await applyRemoteRecord(record);
-
-      const refreshed = await buildLocalRecords();
+      for (const record of (Array.isArray(response.records) ? response.records : [])) await applyRemote(record);
+      const refreshed = await localRecords();
       GM_setValue(LAST_KEYS, JSON.stringify(refreshed.currentKeys));
-      lastSnapshotSignature = JSON.stringify(refreshed.records.map((record) => [record.type, record.key, record.updatedAt, record.deletedAt || '']));
-      if (force) console.info('[Gmail Superpowers Sync] sincronizzazione completata');
+      if (showErrors) console.info('[Gmail Superpowers Sync] sincronizzazione completata');
     } catch (error) {
       console.warn('[Gmail Superpowers Sync]', error);
-      if (force) alert(`Sync non riuscita: ${error.message || error}`);
+      if (showErrors) alert(`Sync non riuscita: ${error.message || error}`);
     } finally {
       syncRunning = false;
       if (syncQueued) {
