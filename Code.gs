@@ -1,4 +1,4 @@
-const GSP_VERSION = '0.2.1';
+const GSP_VERSION = '0.2.2';
 const GSP_RECORD_SHEET = 'records';
 const GSP_LABEL_ROOT = 'gs';
 const GSP_COLUMNS = [
@@ -109,48 +109,6 @@ function saveConversation(e) {
     caseRecord ? `Salvato · label ${caseLabelName_(caseRecord)}` : 'Salvato · nessuna label case',
     true
   );
-}
-
-function changeCaseAction(e) {
-  ensureStorage_();
-  const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
-  const threadId = params.threadId || '';
-  const subject = params.subject || '';
-  const lastEmailAt = params.lastEmailAt || '';
-  const lastEmailLabel = params.lastEmailLabel || '';
-  const state = getConversationState_(threadId, subject);
-  const now = new Date().toISOString();
-  const key = state.member?.key || state.note?.key || state.deadline?.key || `addon:thread:${threadId}`;
-  const account = state.member?.account || state.note?.account || state.deadline?.account || 'addon';
-  const groupId = getStringInput_(e, 'caseId') || '';
-
-  upsertRecord_(Object.assign({}, state.member || {}, {
-    type: 'member',
-    key,
-    account,
-    threadId,
-    subject,
-    groupId,
-    url: state.member?.url || buildGmailSearchUrl_(subject),
-    lastEmailLabel: lastEmailLabel || state.member?.lastEmailLabel || '',
-    lastEmailAt: lastEmailAt || state.member?.lastEmailAt || '',
-    updatedAt: now,
-    deletedAt: ''
-  }));
-
-  const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
-  const labelSync = syncThreadCaseLabel_(threadId, caseRecord);
-  const response = CardService.newActionResponseBuilder().setStateChanged(true);
-  if (!labelSync.ok) {
-    response.setNotification(CardService.newNotification().setText(
-      `Caso aggiornato, ma label Gmail non aggiornata: ${labelSync.error}`
-    ));
-  } else {
-    response.setNotification(CardService.newNotification().setText(
-      caseRecord ? `Caso cambiato · label ${caseLabelName_(caseRecord)}` : 'Caso rimosso · label rimossa'
-    ));
-  }
-  return response.build();
 }
 
 function removeCaseAction(e) {
@@ -269,13 +227,7 @@ function buildConversationCard_(context) {
   const cases = getActiveRecords_('case').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const selection = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('caseId')
-    .setOnChangeAction(CardService.newAction().setFunctionName('changeCaseAction').setParameters({
-      threadId: context.threadId || '',
-      subject: context.subject || '',
-      lastEmailAt: context.lastEmailAt || '',
-      lastEmailLabel: context.lastEmailLabel || ''
-    }));
+    .setFieldName('caseId');
   selection.addItem('Nessun caso', '', !state.member?.groupId);
   cases.forEach((item) => selection.addItem(item.name || item.key, item.key, item.key === state.member?.groupId));
   form.addWidget(selection);
