@@ -213,8 +213,7 @@ function buildConversationCard_(context) {
   const cases = getActiveRecords_('case').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const selection = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('caseId')
-    .setTitle('Caso');
+    .setFieldName('caseId');
   selection.addItem('Nessun caso', '', !state.member?.groupId);
   cases.forEach((item) => selection.addItem(item.name || item.key, item.key, item.key === state.member?.groupId));
   form.addWidget(selection);
