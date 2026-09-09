@@ -6,6 +6,7 @@
   "oauthScopes": [
     "https://www.googleapis.com/auth/gmail.addons.execute",
     "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://mail.google.com/",
     "https://www.googleapis.com/auth/spreadsheets"
   ],
   "addOns": {

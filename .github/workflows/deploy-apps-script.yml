@@ -1,0 +1,54 @@
+name: Deploy Apps Script
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Code.gs'
+      - 'appsscript.json'
+      - '.claspignore'
+      - '.github/workflows/deploy-apps-script.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gmail-superpowers-apps-script
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp@latest
+
+      - name: Restore clasp credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+        run: |
+          test -n "$CLASPRC_JSON"
+          test -n "$CLASP_JSON"
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          printf '%s' "$CLASP_JSON" > .clasp.json
+          chmod 600 "$HOME/.clasprc.json" .clasp.json
+          jq -e . "$HOME/.clasprc.json" >/dev/null
+          jq -e . .clasp.json >/dev/null
+
+      - name: Verify clasp authentication
+        run: clasp login --status
+
+      - name: Push to Apps Script
+        run: clasp push --force

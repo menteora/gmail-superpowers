@@ -1,5 +1,5 @@
-# Clasp reads this file next to .clasp.json. Patterns are applied relative to rootDir=apps-script.
-# Only Apps Script sources are pushed; Tampermonkey userscripts at repository root are never uploaded.
+# Only the native Apps Script add-on sources are pushed.
+# Tampermonkey userscripts and repository support files stay outside Apps Script.
 **/**
 !appsscript.json
 !**/*.gs
