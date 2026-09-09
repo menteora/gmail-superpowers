@@ -1,5 +1,6 @@
-const GSP_VERSION = '0.1.0';
+const GSP_VERSION = '0.2.0';
 const GSP_RECORD_SHEET = 'records';
+const GSP_LABEL_ROOT = 'gs';
 const GSP_COLUMNS = [
   'type', 'key', 'account', 'threadId', 'subject', 'text', 'dueDate',
   'groupId', 'name', 'status', 'url', 'lastEmailLabel', 'lastEmailAt',
@@ -34,6 +35,15 @@ function setupStorageAction(e) {
 function rotateSyncTokenAction(e) {
   rotateSyncToken();
   return updateCardResponse_(buildHomeCard_());
+}
+
+function syncGmailLabelsAction(e) {
+  ensureStorage_();
+  const result = syncAllCaseLabels_();
+  return updateCardResponseWithNotification_(
+    buildHomeCard_(),
+    `Label Gmail sincronizzate: ${result.threads} conversazioni, ${result.labels} case.`
+  );
 }
 
 function saveConversation(e) {
@@ -82,7 +92,68 @@ function saveConversation(e) {
     updatedAt: now, deletedAt: ''
   });
 
+  const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
+  syncThreadCaseLabel_(threadId, caseRecord);
+
   return updateCardResponse_(buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel}));
+}
+
+function removeCaseAction(e) {
+  ensureStorage_();
+  const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
+  const caseId = params.caseId || '';
+  const context = {
+    threadId: params.threadId || '',
+    subject: params.subject || '',
+    lastEmailAt: params.lastEmailAt || '',
+    lastEmailLabel: params.lastEmailLabel || ''
+  };
+  const caseRecord = caseId ? getRecordByKey_('case', caseId) : null;
+  if (!caseRecord) return updateCardResponse_(buildConversationCard_(context));
+
+  const now = new Date().toISOString();
+  const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
+  members.forEach((member) => {
+    upsertRecord_(Object.assign({}, member, {groupId: '', updatedAt: now, deletedAt: ''}));
+    syncThreadCaseLabel_(member.threadId, null);
+  });
+
+  upsertRecord_(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
+  deleteCaseLabel_(caseRecord);
+
+  return updateCardResponseWithNotification_(
+    buildConversationCard_(context),
+    `Caso rimosso: ${caseRecord.name || caseRecord.key}`
+  );
+}
+
+function showPortableLinkAction(e) {
+  const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
+  const subject = params.subject || '';
+  const kind = params.kind === 'markdown' ? 'markdown' : 'url';
+  const url = buildGmailSearchUrl_(subject);
+  const value = kind === 'markdown'
+    ? `[email: ${escapeMarkdownLabel_(subject)}](${url})`
+    : url;
+
+  const card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle(kind === 'markdown' ? 'Markdown' : 'URL'));
+  const section = CardService.newCardSection();
+  section.addWidget(CardService.newTextInput()
+    .setFieldName('portableLinkValue')
+    .setTitle(kind === 'markdown' ? 'Markdown da copiare' : 'URL da copiare')
+    .setValue(value));
+  section.addWidget(CardService.newTextParagraph().setText('Seleziona il testo e copialo con Ctrl+C.'));
+  if (kind === 'url') {
+    section.addWidget(CardService.newTextButton()
+      .setText('Apri email')
+      .setOpenLink(CardService.newOpenLink().setUrl(url)));
+  }
+  card.addSection(section);
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(card.build()))
+    .build();
 }
 
 function buildHomeCard_() {
@@ -91,7 +162,6 @@ function buildHomeCard_() {
   const section = CardService.newCardSection();
   const props = PropertiesService.getScriptProperties();
   const spreadsheetId = props.getProperty('GSP_STORAGE_SPREADSHEET_ID');
-  const token = props.getProperty('GSP_SYNC_TOKEN');
 
   if (!spreadsheetId) {
     section.addWidget(CardService.newTextParagraph().setText('Storage non inizializzato. I dati dell add-on verranno salvati in un Google Sheet dedicato.'));
@@ -102,11 +172,9 @@ function buildHomeCard_() {
     const ss = SpreadsheetApp.openById(spreadsheetId);
     section.addWidget(CardService.newKeyValue().setTopLabel('Storage').setContent(ss.getName()));
     section.addWidget(CardService.newTextButton().setText('Apri Google Sheet').setOpenLink(CardService.newOpenLink().setUrl(ss.getUrl())));
-    const serviceUrl = ScriptApp.getService().getUrl() || '(distribuisci anche come Web App)';
-    section.addWidget(CardService.newTextParagraph().setText('<b>Bridge Tampermonkey</b><br>Endpoint: ' + escapeHtml_(serviceUrl) + '<br>Token: ' + escapeHtml_(token || '(non generato)')));
     section.addWidget(CardService.newTextButton()
-      .setText('Rigenera token bridge')
-      .setOnClickAction(CardService.newAction().setFunctionName('rotateSyncTokenAction')));
+      .setText('Sincronizza label Gmail')
+      .setOnClickAction(CardService.newAction().setFunctionName('syncGmailLabelsAction')));
   }
   card.addSection(section);
   return card.build();
@@ -121,6 +189,18 @@ function buildConversationCard_(context) {
   if (context.lastEmailLabel || context.lastEmailAt) {
     info.addWidget(CardService.newKeyValue().setTopLabel('Ultima email').setContent(context.lastEmailLabel || formatDateTime_(context.lastEmailAt)));
   }
+  const portableButtons = CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
+      .setText('URL')
+      .setOnClickAction(CardService.newAction().setFunctionName('showPortableLinkAction').setParameters({
+        subject: context.subject || '', kind: 'url'
+      })))
+    .addButton(CardService.newTextButton()
+      .setText('Markdown')
+      .setOnClickAction(CardService.newAction().setFunctionName('showPortableLinkAction').setParameters({
+        subject: context.subject || '', kind: 'markdown'
+      })));
+  info.addWidget(portableButtons);
   card.addSection(info);
 
   const form = CardService.newCardSection().setHeader('Conversazione');
@@ -166,11 +246,22 @@ function buildConversationCard_(context) {
         if (member.lastEmailAt || member.lastEmailLabel) details.push('ultima email ' + (member.lastEmailLabel || formatDateTime_(member.lastEmailAt)));
         if (deadline?.dueDate) details.push('scade ' + deadline.dueDate);
         if (note?.text) details.push('stato: ' + note.text);
-        related.addWidget(CardService.newKeyValue()
-          .setContent(member.subject || 'Conversazione')
-          .setBottomLabel(details.join(' · ') || ''));
+        related.addWidget(CardService.newDecoratedText()
+          .setText(member.subject || 'Conversazione')
+          .setBottomLabel(details.join(' · ') || '')
+          .setWrapText(true)
+          .setOpenLink(CardService.newOpenLink().setUrl(member.url || buildGmailSearchUrl_(member.subject || ''))));
       });
     }
+    related.addWidget(CardService.newTextButton()
+      .setText('Rimuovi caso')
+      .setOnClickAction(CardService.newAction().setFunctionName('removeCaseAction').setParameters({
+        caseId: state.caseRecord.key || '',
+        threadId: context.threadId || '',
+        subject: context.subject || '',
+        lastEmailAt: context.lastEmailAt || '',
+        lastEmailLabel: context.lastEmailLabel || ''
+      })));
     card.addSection(related);
   }
 
@@ -355,6 +446,78 @@ function recordToRow_(record) {
   return GSP_COLUMNS.map((column) => record[column] || '');
 }
 
+function syncAllCaseLabels_() {
+  ensureRootLabel_();
+  const cases = getActiveRecords_('case');
+  const casesById = new Map(cases.map((item) => [item.key, item]));
+  const members = getActiveRecords_('member');
+  let threadCount = 0;
+
+  members.forEach((member) => {
+    if (!member.threadId) return;
+    const caseRecord = member.groupId ? casesById.get(member.groupId) || null : null;
+    syncThreadCaseLabel_(member.threadId, caseRecord);
+    threadCount += 1;
+  });
+
+  const activeLabelNames = new Set(cases.map(caseLabelName_));
+  GmailApp.getUserLabels().forEach((label) => {
+    const name = label.getName();
+    if (isManagedCaseLabelName_(name) && !activeLabelNames.has(name)) {
+      GmailApp.deleteLabel(label);
+    }
+  });
+
+  return {threads: threadCount, labels: activeLabelNames.size};
+}
+
+function syncThreadCaseLabel_(threadId, caseRecord) {
+  if (!threadId) return;
+  let thread;
+  try {
+    thread = GmailApp.getThreadById(threadId);
+  } catch (error) {
+    console.warn(`GSP: thread non accessibile ${threadId}: ${error}`);
+    return;
+  }
+  if (!thread) return;
+
+  thread.getLabels().forEach((label) => {
+    if (isManagedCaseLabelName_(label.getName())) thread.removeLabel(label);
+  });
+
+  if (caseRecord) thread.addLabel(ensureCaseLabel_(caseRecord));
+}
+
+function ensureRootLabel_() {
+  return GmailApp.getUserLabelByName(GSP_LABEL_ROOT) || GmailApp.createLabel(GSP_LABEL_ROOT);
+}
+
+function ensureCaseLabel_(caseRecord) {
+  ensureRootLabel_();
+  const name = caseLabelName_(caseRecord);
+  return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
+}
+
+function deleteCaseLabel_(caseRecord) {
+  const label = GmailApp.getUserLabelByName(caseLabelName_(caseRecord));
+  if (label) GmailApp.deleteLabel(label);
+}
+
+function caseLabelName_(caseRecord) {
+  const rawName = caseRecord && (caseRecord.name || caseRecord.key) ? (caseRecord.name || caseRecord.key) : 'Senza nome';
+  const cleanName = String(rawName)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\/+|\/+$/g, '')
+    .trim() || 'Senza nome';
+  return `${GSP_LABEL_ROOT}/${cleanName}`;
+}
+
+function isManagedCaseLabelName_(name) {
+  return String(name || '').startsWith(GSP_LABEL_ROOT + '/');
+}
+
 function getStringInput_(e, fieldName) {
   const input = e?.commonEventObject?.formInputs?.[fieldName];
   return input?.stringInputs?.value?.[0] || '';
@@ -386,6 +549,10 @@ function buildGmailSearchUrl_(subject) {
   return 'https://mail.google.com/mail/#search/' + encodeURIComponent('subject:"' + String(subject || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
 }
 
+function escapeMarkdownLabel_(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+}
+
 function isValidSyncToken_(token) {
   const expected = PropertiesService.getScriptProperties().getProperty('GSP_SYNC_TOKEN');
   return !!expected && String(token || '') === expected;
@@ -398,6 +565,13 @@ function json_(value) {
 function updateCardResponse_(card) {
   return CardService.newActionResponseBuilder()
     .setNavigation(CardService.newNavigation().updateCard(card))
+    .build();
+}
+
+function updateCardResponseWithNotification_(card, message) {
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().updateCard(card))
+    .setNotification(CardService.newNotification().setText(message))
     .build();
 }
 
