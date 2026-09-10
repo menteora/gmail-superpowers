@@ -1,10 +1,15 @@
-const GSP_VERSION = '0.2.2';
+const GSP_VERSION = '0.3.0';
 const GSP_RECORD_SHEET = 'records';
+const GSP_DASHBOARD_SHEET = 'dashboard';
 const GSP_LABEL_ROOT = 'gs';
 const GSP_COLUMNS = [
   'type', 'key', 'account', 'threadId', 'subject', 'text', 'dueDate',
   'groupId', 'name', 'status', 'url', 'lastEmailLabel', 'lastEmailAt',
-  'createdAt', 'updatedAt', 'deletedAt'
+  'createdAt', 'updatedAt', 'deletedAt', 'notes'
+];
+const GSP_DASHBOARD_COLUMNS = [
+  'Caso', 'Stato caso', 'Email collegata', 'Stato email', 'Note',
+  'Scadenza', 'Ultima email', 'Link'
 ];
 
 function onHomepage(e) {
@@ -47,6 +52,15 @@ function syncGmailLabelsAction(e) {
   );
 }
 
+function refreshDashboardAction(e) {
+  const result = refreshDashboard_();
+  return updateCardResponseWithNotification_(
+    buildHomeCard_(),
+    `Dashboard aggiornata: ${result.rows} righe.`,
+    true
+  );
+}
+
 function saveConversation(e) {
   ensureStorage_();
   const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
@@ -60,7 +74,8 @@ function saveConversation(e) {
   const key = state.member?.key || state.note?.key || state.deadline?.key || `addon:thread:${threadId}`;
   const account = state.member?.account || state.note?.account || state.deadline?.account || 'addon';
 
-  const status = getStringInput_(e, 'status');
+  const conversationStatus = getStringInput_(e, 'status').trim();
+  const notes = getStringInput_(e, 'notes').trim();
   const dueDate = getDateInputIso_(e, 'dueDate');
   const selectedCaseId = getStringInput_(e, 'caseId');
   const newCaseName = getStringInput_(e, 'newCaseName').trim();
@@ -81,7 +96,8 @@ function saveConversation(e) {
   }
 
   upsertRecord_({
-    type: 'note', key, account, threadId, subject, text: status,
+    type: 'note', key, account, threadId, subject,
+    text: conversationStatus, notes,
     updatedAt: now, deletedAt: ''
   });
   upsertRecord_({
@@ -96,6 +112,7 @@ function saveConversation(e) {
 
   const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
   const labelSync = syncThreadCaseLabel_(threadId, caseRecord);
+  refreshDashboard_();
   const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel});
   if (!labelSync.ok) {
     return updateCardResponseWithNotification_(
@@ -133,6 +150,7 @@ function removeCaseAction(e) {
 
   upsertRecord_(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
   deleteCaseLabel_(caseRecord);
+  refreshDashboard_();
 
   return updateCardResponseWithNotification_(
     buildConversationCard_(context),
@@ -184,8 +202,15 @@ function buildHomeCard_() {
       .setOnClickAction(CardService.newAction().setFunctionName('setupStorageAction')));
   } else {
     const ss = SpreadsheetApp.openById(spreadsheetId);
+    const dashboard = ensureDashboardSheet_(ss);
     section.addWidget(CardService.newKeyValue().setTopLabel('Storage').setContent(ss.getName()));
     section.addWidget(CardService.newTextButton().setText('Apri Google Sheet').setOpenLink(CardService.newOpenLink().setUrl(ss.getUrl())));
+    section.addWidget(CardService.newTextButton()
+      .setText('Apri dashboard')
+      .setOpenLink(CardService.newOpenLink().setUrl(`${ss.getUrl()}#gid=${dashboard.getSheetId()}`)));
+    section.addWidget(CardService.newTextButton()
+      .setText('Aggiorna dashboard')
+      .setOnClickAction(CardService.newAction().setFunctionName('refreshDashboardAction')));
     section.addWidget(CardService.newTextButton()
       .setText('Sincronizza label Gmail')
       .setOnClickAction(CardService.newAction().setFunctionName('syncGmailLabelsAction')));
@@ -218,7 +243,15 @@ function buildConversationCard_(context) {
   card.addSection(info);
 
   const form = CardService.newCardSection().setHeader('Conversazione');
-  form.addWidget(CardService.newTextInput().setFieldName('status').setTitle('Stato').setValue(state.note?.text || ''));
+  form.addWidget(CardService.newTextInput()
+    .setFieldName('status')
+    .setTitle('Stato')
+    .setValue(state.note?.text || ''));
+  form.addWidget(CardService.newTextInput()
+    .setFieldName('notes')
+    .setTitle('Note')
+    .setMultiline(true)
+    .setValue(state.note?.notes || ''));
 
   const picker = CardService.newDatePicker().setFieldName('dueDate').setTitle('Scadenza');
   if (state.deadline?.dueDate) picker.setValueInMsSinceEpoch(dateIsoToMs_(state.deadline.dueDate));
@@ -260,6 +293,7 @@ function buildConversationCard_(context) {
         if (member.lastEmailAt || member.lastEmailLabel) details.push('ultima email ' + (member.lastEmailLabel || formatDateTime_(member.lastEmailAt)));
         if (deadline?.dueDate) details.push('scade ' + deadline.dueDate);
         if (note?.text) details.push('stato: ' + note.text);
+        if (note?.notes) details.push('note: ' + compactText_(note.notes, 120));
         related.addWidget(CardService.newDecoratedText()
           .setText(member.subject || 'Conversazione')
           .setBottomLabel(details.join(' · ') || '')
@@ -298,6 +332,7 @@ function doPost(e) {
 
     const incoming = Array.isArray(body.records) ? body.records : [];
     mergeRecords_(incoming);
+    refreshDashboard_();
     return json_({ok: true, version: GSP_VERSION, records: listRecords_(true)});
   } catch (error) {
     console.error(error);
@@ -317,10 +352,13 @@ function setupGmailSuperpowers() {
     props.setProperty('GSP_STORAGE_SPREADSHEET_ID', spreadsheetId);
   }
   ensureRecordSheet_(spreadsheet);
+  ensureDashboardSheet_(spreadsheet);
   if (!props.getProperty('GSP_SYNC_TOKEN')) rotateSyncToken();
+  refreshDashboard_(spreadsheet);
   const result = {
     spreadsheetId,
     spreadsheetUrl: spreadsheet.getUrl(),
+    dashboardUrl: `${spreadsheet.getUrl()}#gid=${ensureDashboardSheet_(spreadsheet).getSheetId()}`,
     syncToken: props.getProperty('GSP_SYNC_TOKEN'),
     webAppUrl: ScriptApp.getService().getUrl() || ''
   };
@@ -340,6 +378,7 @@ function ensureStorage_() {
   if (!props.getProperty('GSP_STORAGE_SPREADSHEET_ID')) setupGmailSuperpowers();
   const ss = SpreadsheetApp.openById(props.getProperty('GSP_STORAGE_SPREADSHEET_ID'));
   ensureRecordSheet_(ss);
+  ensureDashboardSheet_(ss);
   return ss;
 }
 
@@ -352,6 +391,108 @@ function ensureRecordSheet_(ss) {
     sheet.setFrozenRows(1);
   }
   return sheet;
+}
+
+function ensureDashboardSheet_(ss) {
+  let sheet = ss.getSheetByName(GSP_DASHBOARD_SHEET);
+  if (!sheet) sheet = ss.insertSheet(GSP_DASHBOARD_SHEET);
+  const width = GSP_DASHBOARD_COLUMNS.length;
+  const current = sheet.getRange(1, 1, 1, width).getDisplayValues()[0];
+  if (current.join('|') !== GSP_DASHBOARD_COLUMNS.join('|')) {
+    sheet.getRange(1, 1, 1, width).setValues([GSP_DASHBOARD_COLUMNS]);
+  }
+  sheet.setFrozenRows(1);
+  sheet.setFrozenColumns(2);
+  sheet.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#f1f3f4');
+  sheet.setColumnWidth(1, 190);
+  sheet.setColumnWidth(2, 190);
+  sheet.setColumnWidth(3, 320);
+  sheet.setColumnWidth(4, 220);
+  sheet.setColumnWidth(5, 360);
+  sheet.setColumnWidth(6, 110);
+  sheet.setColumnWidth(7, 165);
+  sheet.setColumnWidth(8, 320);
+  return sheet;
+}
+
+function refreshDashboard_(spreadsheet) {
+  const ss = spreadsheet || ensureStorage_();
+  const dashboard = ensureDashboardSheet_(ss);
+  const records = listRecords_(false);
+  const cases = records.filter((record) => record.type === 'case');
+  const members = records.filter((record) => record.type === 'member');
+  const casesById = new Map(cases.map((record) => [record.key, record]));
+  const notes = records.filter((record) => record.type === 'note');
+  const deadlines = records.filter((record) => record.type === 'deadline');
+
+  const rows = [];
+  const membersByCase = new Map();
+  members.forEach((member) => {
+    const key = member.groupId || '';
+    membersByCase.set(key, [...(membersByCase.get(key) || []), member]);
+  });
+
+  cases
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it'))
+    .forEach((caseRecord) => {
+      const linked = (membersByCase.get(caseRecord.key) || [])
+        .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'));
+      if (!linked.length) {
+        rows.push([caseRecord.name || caseRecord.key, caseRecord.status || '', '', '', '', '', '', '']);
+        return;
+      }
+      linked.forEach((member) => rows.push(dashboardRow_(caseRecord, member, notes, deadlines)));
+    });
+
+  (membersByCase.get('') || [])
+    .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'))
+    .forEach((member) => rows.push(dashboardRow_(null, member, notes, deadlines)));
+
+  const dangling = members
+    .filter((member) => member.groupId && !casesById.has(member.groupId))
+    .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'));
+  dangling.forEach((member) => rows.push(dashboardRow_(null, member, notes, deadlines)));
+
+  const maxRows = dashboard.getMaxRows();
+  if (maxRows > 1) dashboard.getRange(2, 1, maxRows - 1, GSP_DASHBOARD_COLUMNS.length).clearContent();
+  if (rows.length) {
+    if (dashboard.getMaxRows() < rows.length + 1) {
+      dashboard.insertRowsAfter(dashboard.getMaxRows(), rows.length + 1 - dashboard.getMaxRows());
+    }
+    const range = dashboard.getRange(2, 1, rows.length, GSP_DASHBOARD_COLUMNS.length);
+    range.setValues(rows).setVerticalAlignment('top').setWrap(true);
+  }
+
+  const filter = dashboard.getFilter();
+  if (filter) filter.remove();
+  if (rows.length) dashboard.getRange(1, 1, rows.length + 1, GSP_DASHBOARD_COLUMNS.length).createFilter();
+  return {rows: rows.length, sheetId: dashboard.getSheetId()};
+}
+
+function dashboardRow_(caseRecord, member, notes, deadlines) {
+  const note = findConversationRecord_(notes, member);
+  const deadline = findConversationRecord_(deadlines, member);
+  const lastEmail = member.lastEmailLabel || (member.lastEmailAt ? formatDateTime_(member.lastEmailAt) : '');
+  return [
+    caseRecord ? (caseRecord.name || caseRecord.key) : '',
+    caseRecord ? (caseRecord.status || '') : '',
+    member.subject || '',
+    note?.text || '',
+    note?.notes || '',
+    deadline?.dueDate || '',
+    lastEmail,
+    member.url || buildGmailSearchUrl_(member.subject || '')
+  ];
+}
+
+function findConversationRecord_(records, member) {
+  if (!member) return null;
+  const normalized = normalizeSubject_(member.subject);
+  return records.find((record) => {
+    if (member.key && record.key === member.key) return true;
+    if (member.threadId && record.threadId === member.threadId) return true;
+    return normalized && normalizeSubject_(record.subject) === normalized;
+  }) || null;
 }
 
 function listRecords_(includeDeleted) {
@@ -561,6 +702,12 @@ function formatDateTime_(iso) {
 
 function normalizeSubject_(value) {
   return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function compactText_(value, maxLength) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!maxLength || text.length <= maxLength) return text;
+  return text.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '…';
 }
 
 function buildGmailSearchUrl_(subject) {
