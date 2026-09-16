@@ -1,7 +1,8 @@
-const GSP_VERSION = '0.3.0';
+const GSP_VERSION = '0.4.0';
 const GSP_RECORD_SHEET = 'records';
 const GSP_DASHBOARD_SHEET = 'dashboard';
-const GSP_LABEL_ROOT = 'gs';
+const GSP_LABEL_ROOT = 'gss';
+const GSP_LEGACY_CASE_LABEL_ROOT = 'gs';
 const GSP_COLUMNS = [
   'type', 'key', 'account', 'threadId', 'subject', 'text', 'dueDate',
   'groupId', 'name', 'status', 'url', 'lastEmailLabel', 'lastEmailAt',
@@ -44,10 +45,10 @@ function rotateSyncTokenAction(e) {
 
 function syncGmailLabelsAction(e) {
   ensureStorage_();
-  const result = syncAllCaseLabels_();
+  const result = syncAllStatusLabels_();
   return updateCardResponseWithNotification_(
     buildHomeCard_(),
-    `Label Gmail sincronizzate: ${result.threads} conversazioni, ${result.labels} case.`,
+    `Label stati sincronizzate: ${result.threads} conversazioni, ${result.labels} stati.`,
     true
   );
 }
@@ -74,24 +75,27 @@ function saveConversation(e) {
   const key = state.member?.key || state.note?.key || state.deadline?.key || `addon:thread:${threadId}`;
   const account = state.member?.account || state.note?.account || state.deadline?.account || 'addon';
 
-  const conversationStatus = getStringInput_(e, 'status').trim();
+  const conversationStatus = resolveStatusInput_(e, 'status', 'newStatus');
   const notes = getStringInput_(e, 'notes').trim();
   const dueDate = getDateInputIso_(e, 'dueDate');
   const selectedCaseId = getStringInput_(e, 'caseId');
   const newCaseName = getStringInput_(e, 'newCaseName').trim();
-  const caseStatus = getStringInput_(e, 'caseStatus').trim();
+  const caseStatus = resolveStatusInput_(e, 'caseStatus', 'newCaseStatus');
 
   let groupId = selectedCaseId || '';
+  let caseStatusChanged = false;
   if (newCaseName) {
     groupId = Utilities.getUuid();
     upsertRecord_({
       type: 'case', key: groupId, account, name: newCaseName, status: caseStatus,
       createdAt: now, updatedAt: now
     });
+    caseStatusChanged = true;
   } else if (groupId && groupId === originalCaseId) {
     const currentCase = getRecordByKey_('case', groupId);
-    if (currentCase) {
+    if (currentCase && (currentCase.status || '') !== caseStatus) {
       upsertRecord_(Object.assign({}, currentCase, {status: caseStatus, updatedAt: now, deletedAt: ''}));
+      caseStatusChanged = true;
     }
   }
 
@@ -111,7 +115,12 @@ function saveConversation(e) {
   });
 
   const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
-  const labelSync = syncThreadCaseLabel_(threadId, caseRecord);
+  let labelSync = syncThreadStatusLabels_(threadId, conversationStatus, caseRecord?.status || '');
+  if (caseRecord && caseStatusChanged) {
+    const caseSync = syncCaseStatusLabels_(caseRecord.key);
+    if (!caseSync.ok && labelSync.ok) labelSync = caseSync;
+  }
+
   refreshDashboard_();
   const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel});
   if (!labelSync.ok) {
@@ -123,7 +132,7 @@ function saveConversation(e) {
   }
   return updateCardResponseWithNotification_(
     card,
-    caseRecord ? `Salvato · label ${caseLabelName_(caseRecord)}` : 'Salvato · nessuna label case',
+    labelSync.labels.length ? `Salvato · ${labelSync.labels.join(' · ')}` : 'Salvato · nessuno stato',
     true
   );
 }
@@ -145,11 +154,11 @@ function removeCaseAction(e) {
   const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
   members.forEach((member) => {
     upsertRecord_(Object.assign({}, member, {groupId: '', updatedAt: now, deletedAt: ''}));
-    syncThreadCaseLabel_(member.threadId, null);
+    const note = getRecordByConversation_('note', member.threadId, member.subject);
+    syncThreadStatusLabels_(member.threadId, note?.text || '', '');
   });
 
   upsertRecord_(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
-  deleteCaseLabel_(caseRecord);
   refreshDashboard_();
 
   return updateCardResponseWithNotification_(
@@ -212,7 +221,7 @@ function buildHomeCard_() {
       .setText('Aggiorna dashboard')
       .setOnClickAction(CardService.newAction().setFunctionName('refreshDashboardAction')));
     section.addWidget(CardService.newTextButton()
-      .setText('Sincronizza label Gmail')
+      .setText('Sincronizza label stati')
       .setOnClickAction(CardService.newAction().setFunctionName('syncGmailLabelsAction')));
   }
   card.addSection(section);
@@ -221,6 +230,7 @@ function buildHomeCard_() {
 
 function buildConversationCard_(context) {
   const state = getConversationState_(context.threadId, context.subject);
+  const statuses = getStatusCatalog_();
   const card = CardService.newCardBuilder();
   card.setHeader(CardService.newCardHeader().setTitle('Gmail Superpowers').setSubtitle(context.subject || 'Conversazione'));
 
@@ -243,10 +253,11 @@ function buildConversationCard_(context) {
   card.addSection(info);
 
   const form = CardService.newCardSection().setHeader('Conversazione');
+  form.addWidget(buildStatusSelection_('status', 'Stato', state.note?.text || '', statuses));
   form.addWidget(CardService.newTextInput()
-    .setFieldName('status')
-    .setTitle('Stato')
-    .setValue(state.note?.text || ''));
+    .setFieldName('newStatus')
+    .setTitle('Nuovo stato')
+    .setHint(`Se compilato, crea e usa la label ${GSP_LABEL_ROOT}/nome stato`));
   form.addWidget(CardService.newTextInput()
     .setFieldName('notes')
     .setTitle('Note')
@@ -265,7 +276,11 @@ function buildConversationCard_(context) {
   cases.forEach((item) => selection.addItem(item.name || item.key, item.key, item.key === state.member?.groupId));
   form.addWidget(selection);
   form.addWidget(CardService.newTextInput().setFieldName('newCaseName').setTitle('Nuovo caso').setHint('Se compilato, crea un nuovo caso e collega questa conversazione'));
-  form.addWidget(CardService.newTextInput().setFieldName('caseStatus').setTitle('Stato del caso').setValue(state.caseRecord?.status || ''));
+  form.addWidget(buildStatusSelection_('caseStatus', 'Stato del caso', state.caseRecord?.status || '', statuses));
+  form.addWidget(CardService.newTextInput()
+    .setFieldName('newCaseStatus')
+    .setTitle('Nuovo stato del caso')
+    .setHint('Se compilato, crea e usa un nuovo stato condiviso'));
 
   const save = CardService.newTextButton()
     .setText('Salva')
@@ -314,6 +329,44 @@ function buildConversationCard_(context) {
   }
 
   return card.build();
+}
+
+function buildStatusSelection_(fieldName, title, currentValue, statuses) {
+  const current = cleanStatus_(currentValue);
+  const values = [...statuses];
+  if (current && !values.some((value) => value.toLowerCase() === current.toLowerCase())) values.push(current);
+  values.sort((a, b) => a.localeCompare(b, 'it', {sensitivity: 'base'}));
+
+  const selection = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName(fieldName);
+  selection.addItem('Nessuno stato', '', !current);
+  values.forEach((value) => selection.addItem(value, value, value === current));
+  return selection;
+}
+
+function resolveStatusInput_(e, selectedField, newField) {
+  const created = cleanStatus_(getStringInput_(e, newField));
+  if (created) return created;
+  return cleanStatus_(getStringInput_(e, selectedField));
+}
+
+function getStatusCatalog_() {
+  const statuses = new Map();
+  const add = (value) => {
+    const clean = cleanStatus_(value);
+    if (!clean) return;
+    const key = clean.toLocaleLowerCase('it');
+    if (!statuses.has(key)) statuses.set(key, clean);
+  };
+
+  getActiveRecords_('note').forEach((record) => add(record.text));
+  getActiveRecords_('case').forEach((record) => add(record.status));
+  GmailApp.getUserLabels().forEach((label) => {
+    const name = label.getName();
+    if (isManagedStatusLabelName_(name)) add(name.slice(GSP_LABEL_ROOT.length + 1));
+  });
+  return [...statuses.values()].sort((a, b) => a.localeCompare(b, 'it', {sensitivity: 'base'}));
 }
 
 function doGet(e) {
@@ -601,50 +654,74 @@ function recordToRow_(record) {
   return GSP_COLUMNS.map((column) => record[column] || '');
 }
 
-function syncAllCaseLabels_() {
+function syncAllStatusLabels_() {
   ensureRootLabel_();
   const cases = getActiveRecords_('case');
   const casesById = new Map(cases.map((item) => [item.key, item]));
   const members = getActiveRecords_('member');
+  const notes = getActiveRecords_('note');
+  const notesByThread = new Map(notes.filter((item) => item.threadId).map((item) => [item.threadId, item]));
+  const membersByThread = new Map(members.filter((item) => item.threadId).map((item) => [item.threadId, item]));
+  const threadIds = new Set([...notesByThread.keys(), ...membersByThread.keys()]);
   let threadCount = 0;
 
-  members.forEach((member) => {
-    if (!member.threadId) return;
-    const caseRecord = member.groupId ? casesById.get(member.groupId) || null : null;
-    syncThreadCaseLabel_(member.threadId, caseRecord);
+  threadIds.forEach((threadId) => {
+    const note = notesByThread.get(threadId) || null;
+    const member = membersByThread.get(threadId) || null;
+    const caseRecord = member?.groupId ? casesById.get(member.groupId) || null : null;
+    syncThreadStatusLabels_(threadId, note?.text || '', caseRecord?.status || '');
     threadCount += 1;
   });
 
-  const activeLabelNames = new Set(cases.map(caseLabelName_));
   GmailApp.getUserLabels().forEach((label) => {
-    const name = label.getName();
-    if (isManagedCaseLabelName_(name) && !activeLabelNames.has(name)) {
-      GmailApp.deleteLabel(label);
-    }
+    if (isLegacyCaseLabelName_(label.getName())) GmailApp.deleteLabel(label);
   });
 
-  return {threads: threadCount, labels: activeLabelNames.size};
+  return {threads: threadCount, labels: getStatusCatalog_().length};
 }
 
-function syncThreadCaseLabel_(threadId, caseRecord) {
-  if (!threadId) return {ok: false, error: 'threadId mancante'};
+function syncCaseStatusLabels_(caseId) {
+  const caseRecord = caseId ? getRecordByKey_('case', caseId) : null;
+  if (!caseRecord) return {ok: true, labels: []};
+  const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
+  let firstError = '';
+  const labels = new Set();
+  members.forEach((member) => {
+    const note = getRecordByConversation_('note', member.threadId, member.subject);
+    const result = syncThreadStatusLabels_(member.threadId, note?.text || '', caseRecord.status || '');
+    result.labels.forEach((label) => labels.add(label));
+    if (!result.ok && !firstError) firstError = result.error;
+  });
+  return {ok: !firstError, error: firstError, labels: [...labels]};
+}
+
+function syncThreadStatusLabels_(threadId, conversationStatus, caseStatus) {
+  if (!threadId) return {ok: false, error: 'threadId mancante', labels: []};
   try {
     const thread = GmailApp.getThreadById(threadId);
-    if (!thread) return {ok: false, error: 'thread Gmail non trovato'};
+    if (!thread) return {ok: false, error: 'thread Gmail non trovato', labels: []};
 
     thread.getLabels().forEach((label) => {
-      if (isManagedCaseLabelName_(label.getName())) thread.removeLabel(label);
+      const name = label.getName();
+      if (isManagedStatusLabelName_(name) || isLegacyCaseLabelName_(name)) thread.removeLabel(label);
     });
 
-    if (caseRecord) {
-      const label = ensureCaseLabel_(caseRecord);
+    const wanted = new Map();
+    [conversationStatus, caseStatus].forEach((status) => {
+      const clean = cleanStatus_(status);
+      if (clean) wanted.set(clean.toLocaleLowerCase('it'), clean);
+    });
+
+    const labels = [];
+    wanted.forEach((status) => {
+      const label = ensureStatusLabel_(status);
       thread.addLabel(label);
-      return {ok: true, label: label.getName()};
-    }
-    return {ok: true, label: ''};
+      labels.push(label.getName());
+    });
+    return {ok: true, labels};
   } catch (error) {
-    console.warn(`GSP: impossibile sincronizzare label per ${threadId}: ${error}`);
-    return {ok: false, error: String(error && error.message ? error.message : error)};
+    console.warn(`GSP: impossibile sincronizzare label stato per ${threadId}: ${error}`);
+    return {ok: false, error: String(error && error.message ? error.message : error), labels: []};
   }
 }
 
@@ -652,29 +729,31 @@ function ensureRootLabel_() {
   return GmailApp.getUserLabelByName(GSP_LABEL_ROOT) || GmailApp.createLabel(GSP_LABEL_ROOT);
 }
 
-function ensureCaseLabel_(caseRecord) {
+function ensureStatusLabel_(status) {
   ensureRootLabel_();
-  const name = caseLabelName_(caseRecord);
+  const name = statusLabelName_(status);
   return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
 }
 
-function deleteCaseLabel_(caseRecord) {
-  const label = GmailApp.getUserLabelByName(caseLabelName_(caseRecord));
-  if (label) GmailApp.deleteLabel(label);
+function statusLabelName_(status) {
+  const clean = cleanStatus_(status) || 'Senza stato';
+  return `${GSP_LABEL_ROOT}/${clean}`;
 }
 
-function caseLabelName_(caseRecord) {
-  const rawName = caseRecord && (caseRecord.name || caseRecord.key) ? (caseRecord.name || caseRecord.key) : 'Senza nome';
-  const cleanName = String(rawName)
+function cleanStatus_(value) {
+  return String(value || '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^\/+|\/+$/g, '')
-    .trim() || 'Senza nome';
-  return `${GSP_LABEL_ROOT}/${cleanName}`;
+    .trim();
 }
 
-function isManagedCaseLabelName_(name) {
+function isManagedStatusLabelName_(name) {
   return String(name || '').startsWith(GSP_LABEL_ROOT + '/');
+}
+
+function isLegacyCaseLabelName_(name) {
+  return String(name || '').startsWith(GSP_LEGACY_CASE_LABEL_ROOT + '/');
 }
 
 function getStringInput_(e, fieldName) {
