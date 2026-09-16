@@ -1,8 +1,8 @@
-const GSP_VERSION = '0.4.0';
+const GSP_VERSION = '0.4.1';
 const GSP_RECORD_SHEET = 'records';
 const GSP_DASHBOARD_SHEET = 'dashboard';
-const GSP_LABEL_ROOT = 'gss';
-const GSP_LEGACY_CASE_LABEL_ROOT = 'gs';
+const GSP_CASE_LABEL_ROOT = 'gs';
+const GSP_STATUS_LABEL_ROOT = 'gss';
 const GSP_COLUMNS = [
   'type', 'key', 'account', 'threadId', 'subject', 'text', 'dueDate',
   'groupId', 'name', 'status', 'url', 'lastEmailLabel', 'lastEmailAt',
@@ -45,10 +45,10 @@ function rotateSyncTokenAction(e) {
 
 function syncGmailLabelsAction(e) {
   ensureStorage_();
-  const result = syncAllStatusLabels_();
+  const result = syncAllGmailLabels_();
   return updateCardResponseWithNotification_(
     buildHomeCard_(),
-    `Label stati sincronizzate: ${result.threads} conversazioni, ${result.labels} stati.`,
+    `Label Gmail sincronizzate: ${result.threads} conversazioni, ${result.cases} case, ${result.statuses} stati.`,
     true
   );
 }
@@ -115,24 +115,30 @@ function saveConversation(e) {
   });
 
   const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
-  let labelSync = syncThreadStatusLabels_(threadId, conversationStatus, caseRecord?.status || '');
+  const caseLabelSync = syncThreadCaseLabel_(threadId, caseRecord);
+  let statusLabelSync = syncThreadStatusLabels_(threadId, conversationStatus, caseRecord?.status || '');
   if (caseRecord && caseStatusChanged) {
-    const caseSync = syncCaseStatusLabels_(caseRecord.key);
-    if (!caseSync.ok && labelSync.ok) labelSync = caseSync;
+    const caseStatusSync = syncCaseStatusLabels_(caseRecord.key);
+    if (!caseStatusSync.ok && statusLabelSync.ok) statusLabelSync = caseStatusSync;
   }
 
   refreshDashboard_();
   const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel});
-  if (!labelSync.ok) {
+  const labelError = !caseLabelSync.ok ? caseLabelSync.error : (!statusLabelSync.ok ? statusLabelSync.error : '');
+  if (labelError) {
     return updateCardResponseWithNotification_(
       card,
-      `Salvato, ma label Gmail non aggiornata: ${labelSync.error}`,
+      `Salvato, ma label Gmail non aggiornata: ${labelError}`,
       true
     );
   }
+
+  const appliedLabels = [];
+  if (caseLabelSync.label) appliedLabels.push(caseLabelSync.label);
+  statusLabelSync.labels.forEach((label) => appliedLabels.push(label));
   return updateCardResponseWithNotification_(
     card,
-    labelSync.labels.length ? `Salvato · ${labelSync.labels.join(' · ')}` : 'Salvato · nessuno stato',
+    appliedLabels.length ? `Salvato · ${appliedLabels.join(' · ')}` : 'Salvato · nessuna label',
     true
   );
 }
@@ -154,11 +160,13 @@ function removeCaseAction(e) {
   const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
   members.forEach((member) => {
     upsertRecord_(Object.assign({}, member, {groupId: '', updatedAt: now, deletedAt: ''}));
+    syncThreadCaseLabel_(member.threadId, null);
     const note = getRecordByConversation_('note', member.threadId, member.subject);
     syncThreadStatusLabels_(member.threadId, note?.text || '', '');
   });
 
   upsertRecord_(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
+  deleteCaseLabel_(caseRecord);
   refreshDashboard_();
 
   return updateCardResponseWithNotification_(
@@ -221,7 +229,7 @@ function buildHomeCard_() {
       .setText('Aggiorna dashboard')
       .setOnClickAction(CardService.newAction().setFunctionName('refreshDashboardAction')));
     section.addWidget(CardService.newTextButton()
-      .setText('Sincronizza label stati')
+      .setText('Sincronizza label Gmail')
       .setOnClickAction(CardService.newAction().setFunctionName('syncGmailLabelsAction')));
   }
   card.addSection(section);
@@ -257,7 +265,7 @@ function buildConversationCard_(context) {
   form.addWidget(CardService.newTextInput()
     .setFieldName('newStatus')
     .setTitle('Nuovo stato')
-    .setHint(`Se compilato, crea e usa la label ${GSP_LABEL_ROOT}/nome stato`));
+    .setHint(`Se compilato, crea e usa la label ${GSP_STATUS_LABEL_ROOT}/nome stato`));
   form.addWidget(CardService.newTextInput()
     .setFieldName('notes')
     .setTitle('Note')
@@ -280,7 +288,7 @@ function buildConversationCard_(context) {
   form.addWidget(CardService.newTextInput()
     .setFieldName('newCaseStatus')
     .setTitle('Nuovo stato del caso')
-    .setHint('Se compilato, crea e usa un nuovo stato condiviso'));
+    .setHint(`Se compilato, crea e usa la label ${GSP_STATUS_LABEL_ROOT}/nome stato sulle conversazioni del case`));
 
   const save = CardService.newTextButton()
     .setText('Salva')
@@ -364,7 +372,7 @@ function getStatusCatalog_() {
   getActiveRecords_('case').forEach((record) => add(record.status));
   GmailApp.getUserLabels().forEach((label) => {
     const name = label.getName();
-    if (isManagedStatusLabelName_(name)) add(name.slice(GSP_LABEL_ROOT.length + 1));
+    if (isManagedStatusLabelName_(name)) add(name.slice(GSP_STATUS_LABEL_ROOT.length + 1));
   });
   return [...statuses.values()].sort((a, b) => a.localeCompare(b, 'it', {sensitivity: 'base'}));
 }
@@ -654,8 +662,9 @@ function recordToRow_(record) {
   return GSP_COLUMNS.map((column) => record[column] || '');
 }
 
-function syncAllStatusLabels_() {
-  ensureRootLabel_();
+function syncAllGmailLabels_() {
+  ensureCaseRootLabel_();
+  ensureStatusRootLabel_();
   const cases = getActiveRecords_('case');
   const casesById = new Map(cases.map((item) => [item.key, item]));
   const members = getActiveRecords_('member');
@@ -669,15 +678,18 @@ function syncAllStatusLabels_() {
     const note = notesByThread.get(threadId) || null;
     const member = membersByThread.get(threadId) || null;
     const caseRecord = member?.groupId ? casesById.get(member.groupId) || null : null;
+    syncThreadCaseLabel_(threadId, caseRecord);
     syncThreadStatusLabels_(threadId, note?.text || '', caseRecord?.status || '');
     threadCount += 1;
   });
 
+  const activeCaseLabelNames = new Set(cases.map(caseLabelName_));
   GmailApp.getUserLabels().forEach((label) => {
-    if (isLegacyCaseLabelName_(label.getName())) GmailApp.deleteLabel(label);
+    const name = label.getName();
+    if (isManagedCaseLabelName_(name) && !activeCaseLabelNames.has(name)) GmailApp.deleteLabel(label);
   });
 
-  return {threads: threadCount, labels: getStatusCatalog_().length};
+  return {threads: threadCount, cases: activeCaseLabelNames.size, statuses: getStatusCatalog_().length};
 }
 
 function syncCaseStatusLabels_(caseId) {
@@ -695,6 +707,28 @@ function syncCaseStatusLabels_(caseId) {
   return {ok: !firstError, error: firstError, labels: [...labels]};
 }
 
+function syncThreadCaseLabel_(threadId, caseRecord) {
+  if (!threadId) return {ok: false, error: 'threadId mancante', label: ''};
+  try {
+    const thread = GmailApp.getThreadById(threadId);
+    if (!thread) return {ok: false, error: 'thread Gmail non trovato', label: ''};
+
+    thread.getLabels().forEach((label) => {
+      if (isManagedCaseLabelName_(label.getName())) thread.removeLabel(label);
+    });
+
+    if (caseRecord) {
+      const label = ensureCaseLabel_(caseRecord);
+      thread.addLabel(label);
+      return {ok: true, label: label.getName()};
+    }
+    return {ok: true, label: ''};
+  } catch (error) {
+    console.warn(`GSP: impossibile sincronizzare label case per ${threadId}: ${error}`);
+    return {ok: false, error: String(error && error.message ? error.message : error), label: ''};
+  }
+}
+
 function syncThreadStatusLabels_(threadId, conversationStatus, caseStatus) {
   if (!threadId) return {ok: false, error: 'threadId mancante', labels: []};
   try {
@@ -702,8 +736,7 @@ function syncThreadStatusLabels_(threadId, conversationStatus, caseStatus) {
     if (!thread) return {ok: false, error: 'thread Gmail non trovato', labels: []};
 
     thread.getLabels().forEach((label) => {
-      const name = label.getName();
-      if (isManagedStatusLabelName_(name) || isLegacyCaseLabelName_(name)) thread.removeLabel(label);
+      if (isManagedStatusLabelName_(label.getName())) thread.removeLabel(label);
     });
 
     const wanted = new Map();
@@ -725,19 +758,44 @@ function syncThreadStatusLabels_(threadId, conversationStatus, caseStatus) {
   }
 }
 
-function ensureRootLabel_() {
-  return GmailApp.getUserLabelByName(GSP_LABEL_ROOT) || GmailApp.createLabel(GSP_LABEL_ROOT);
+function ensureCaseRootLabel_() {
+  return GmailApp.getUserLabelByName(GSP_CASE_LABEL_ROOT) || GmailApp.createLabel(GSP_CASE_LABEL_ROOT);
+}
+
+function ensureStatusRootLabel_() {
+  return GmailApp.getUserLabelByName(GSP_STATUS_LABEL_ROOT) || GmailApp.createLabel(GSP_STATUS_LABEL_ROOT);
+}
+
+function ensureCaseLabel_(caseRecord) {
+  ensureCaseRootLabel_();
+  const name = caseLabelName_(caseRecord);
+  return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
 }
 
 function ensureStatusLabel_(status) {
-  ensureRootLabel_();
+  ensureStatusRootLabel_();
   const name = statusLabelName_(status);
   return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
 }
 
+function deleteCaseLabel_(caseRecord) {
+  const label = GmailApp.getUserLabelByName(caseLabelName_(caseRecord));
+  if (label) GmailApp.deleteLabel(label);
+}
+
+function caseLabelName_(caseRecord) {
+  const rawName = caseRecord && (caseRecord.name || caseRecord.key) ? (caseRecord.name || caseRecord.key) : 'Senza nome';
+  const cleanName = String(rawName)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\/+|\/+$/g, '')
+    .trim() || 'Senza nome';
+  return `${GSP_CASE_LABEL_ROOT}/${cleanName}`;
+}
+
 function statusLabelName_(status) {
   const clean = cleanStatus_(status) || 'Senza stato';
-  return `${GSP_LABEL_ROOT}/${clean}`;
+  return `${GSP_STATUS_LABEL_ROOT}/${clean}`;
 }
 
 function cleanStatus_(value) {
@@ -748,12 +806,12 @@ function cleanStatus_(value) {
     .trim();
 }
 
-function isManagedStatusLabelName_(name) {
-  return String(name || '').startsWith(GSP_LABEL_ROOT + '/');
+function isManagedCaseLabelName_(name) {
+  return String(name || '').startsWith(GSP_CASE_LABEL_ROOT + '/');
 }
 
-function isLegacyCaseLabelName_(name) {
-  return String(name || '').startsWith(GSP_LEGACY_CASE_LABEL_ROOT + '/');
+function isManagedStatusLabelName_(name) {
+  return String(name || '').startsWith(GSP_STATUS_LABEL_ROOT + '/');
 }
 
 function getStringInput_(e, fieldName) {
