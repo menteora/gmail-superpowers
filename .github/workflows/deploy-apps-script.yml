@@ -5,9 +5,8 @@ on:
     branches:
       - main
     paths:
-      - 'Code.gs'
+      - '**/*.gs'
       - 'appsscript.json'
-      - '.claspignore'
       - '.github/workflows/deploy-apps-script.yml'
   workflow_dispatch:
 
@@ -26,29 +25,105 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install clasp
-        run: npm install --global @google/clasp@latest
-
-      - name: Restore clasp credentials
+      - name: Resolve Apps Script ID
+        id: config
         env:
-          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
           CLASP_JSON: ${{ secrets.CLASP_JSON }}
         run: |
-          test -n "$CLASPRC_JSON"
-          test -n "$CLASP_JSON"
-          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
-          printf '%s' "$CLASP_JSON" > .clasp.json
-          chmod 600 "$HOME/.clasprc.json" .clasp.json
-          jq -e . "$HOME/.clasprc.json" >/dev/null
-          jq -e . .clasp.json >/dev/null
+          script_id="$APPS_SCRIPT_ID"
+          if [ -z "$script_id" ] && [ -n "$CLASP_JSON" ]; then
+            script_id="$(printf '%s' "$CLASP_JSON" | jq -r '.scriptId // empty')"
+          fi
+          if [ -z "$script_id" ]; then
+            echo 'Missing APPS_SCRIPT_ID (or legacy CLASP_JSON with scriptId).' >&2
+            exit 1
+          fi
+          echo "script_id=$script_id" >> "$GITHUB_OUTPUT"
 
-      - name: Verify clasp authentication
-        run: clasp login --status
+      - name: Exchange OAuth refresh token
+        id: auth
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+        run: |
+          test -n "$GOOGLE_OAUTH_CLIENT_ID"
+          test -n "$GOOGLE_OAUTH_CLIENT_SECRET"
+          test -n "$GOOGLE_OAUTH_REFRESH_TOKEN"
 
-      - name: Push to Apps Script
-        run: clasp push --force
+          response="$(curl -sS -X POST 'https://oauth2.googleapis.com/token' \
+            --data-urlencode "client_id=$GOOGLE_OAUTH_CLIENT_ID" \
+            --data-urlencode "client_secret=$GOOGLE_OAUTH_CLIENT_SECRET" \
+            --data-urlencode "refresh_token=$GOOGLE_OAUTH_REFRESH_TOKEN" \
+            --data-urlencode 'grant_type=refresh_token')"
+
+          access_token="$(printf '%s' "$response" | jq -r '.access_token // empty')"
+          if [ -z "$access_token" ]; then
+            printf '%s' "$response" | jq -r '"OAuth error: \(.error // "unknown") - \(.error_description // "no description")"' >&2
+            exit 1
+          fi
+
+          echo "::add-mask::$access_token"
+          echo "access_token=$access_token" >> "$GITHUB_OUTPUT"
+
+      - name: Build Apps Script API payload
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = []
+          for path in sorted(Path('.').rglob('*.gs')):
+              if '.git' in path.parts:
+                  continue
+              name = path.as_posix()
+              if name.startswith('./'):
+                  name = name[2:]
+              name = name[:-3]
+              files.append({
+                  'name': name,
+                  'type': 'SERVER_JS',
+                  'source': path.read_text(encoding='utf-8'),
+              })
+
+          manifest_path = Path('appsscript.json')
+          manifest_source = manifest_path.read_text(encoding='utf-8')
+          json.loads(manifest_source)
+          files.append({
+              'name': 'appsscript',
+              'type': 'JSON',
+              'source': manifest_source,
+          })
+
+          if len(files) < 2:
+              raise SystemExit('No Apps Script source files found.')
+
+          Path('/tmp/apps-script-content.json').write_text(
+              json.dumps({'files': files}, ensure_ascii=False),
+              encoding='utf-8',
+          )
+          print(f'Prepared {len(files)} Apps Script files.')
+          PY
+
+      - name: Push HEAD via Apps Script API
+        env:
+          SCRIPT_ID: ${{ steps.config.outputs.script_id }}
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          status="$(curl -sS \
+            -o /tmp/apps-script-response.json \
+            -w '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/apps-script-content.json \
+            "https://script.googleapis.com/v1/projects/$SCRIPT_ID/content")"
+
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Apps Script API returned HTTP $status" >&2
+            jq -r '.error.message // .error // "Unknown Apps Script API error"' /tmp/apps-script-response.json >&2 || true
+            exit 1
+          fi
+
+          echo 'Apps Script HEAD updated successfully.'
