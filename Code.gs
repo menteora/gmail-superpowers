@@ -1,4 +1,4 @@
-const GSP_VERSION = '0.4.1';
+const GSP_VERSION = '0.4.2';
 const GSP_RECORD_SHEET = 'records';
 const GSP_DASHBOARD_SHEET = 'dashboard';
 const GSP_CASE_LABEL_ROOT = 'gs';
@@ -18,7 +18,6 @@ function onHomepage(e) {
 }
 
 function onGmailMessageOpen(e) {
-  ensureStorage_();
   GmailApp.setCurrentMessageAccessToken(e.gmail.accessToken);
   const message = GmailApp.getMessageById(e.gmail.messageId);
   const thread = message.getThread();
@@ -44,8 +43,8 @@ function rotateSyncTokenAction(e) {
 }
 
 function syncGmailLabelsAction(e) {
-  ensureStorage_();
-  const result = syncAllGmailLabels_();
+  const storage = loadStorageSnapshot_();
+  const result = syncAllGmailLabels_(storage.records);
   return updateCardResponseWithNotification_(
     buildHomeCard_(),
     `Label Gmail sincronizzate: ${result.threads} conversazioni, ${result.cases} case, ${result.statuses} stati.`,
@@ -54,7 +53,8 @@ function syncGmailLabelsAction(e) {
 }
 
 function refreshDashboardAction(e) {
-  const result = refreshDashboard_();
+  const storage = loadStorageSnapshot_();
+  const result = refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
   return updateCardResponseWithNotification_(
     buildHomeCard_(),
     `Dashboard aggiornata: ${result.rows} righe.`,
@@ -63,14 +63,14 @@ function refreshDashboardAction(e) {
 }
 
 function saveConversation(e) {
-  ensureStorage_();
+  const storage = loadStorageSnapshot_();
   const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
   const threadId = params.threadId || '';
   const subject = params.subject || '';
   const lastEmailAt = params.lastEmailAt || '';
   const lastEmailLabel = params.lastEmailLabel || '';
   const originalCaseId = params.originalCaseId || '';
-  const state = getConversationState_(threadId, subject);
+  const state = getConversationState_(threadId, subject, storage.records);
   const now = new Date().toISOString();
   const key = state.member?.key || state.note?.key || state.deadline?.key || `addon:thread:${threadId}`;
   const account = state.member?.account || state.note?.account || state.deadline?.account || 'addon';
@@ -84,46 +84,50 @@ function saveConversation(e) {
 
   let groupId = selectedCaseId || '';
   let caseStatusChanged = false;
+  const pending = [];
+
   if (newCaseName) {
     groupId = Utilities.getUuid();
-    upsertRecord_({
+    pending.push({
       type: 'case', key: groupId, account, name: newCaseName, status: caseStatus,
       createdAt: now, updatedAt: now
     });
     caseStatusChanged = true;
   } else if (groupId && groupId === originalCaseId) {
-    const currentCase = getRecordByKey_('case', groupId);
+    const currentCase = getRecordByKey_('case', groupId, storage.records);
     if (currentCase && (currentCase.status || '') !== caseStatus) {
-      upsertRecord_(Object.assign({}, currentCase, {status: caseStatus, updatedAt: now, deletedAt: ''}));
+      pending.push(Object.assign({}, currentCase, {status: caseStatus, updatedAt: now, deletedAt: ''}));
       caseStatusChanged = true;
     }
   }
 
-  upsertRecord_({
+  pending.push({
     type: 'note', key, account, threadId, subject,
     text: conversationStatus, notes,
     updatedAt: now, deletedAt: ''
   });
-  upsertRecord_({
+  pending.push({
     type: 'deadline', key, account, threadId, subject, dueDate,
     updatedAt: now, deletedAt: ''
   });
-  upsertRecord_({
+  pending.push({
     type: 'member', key, account, threadId, subject, groupId,
     url: buildGmailSearchUrl_(subject), lastEmailLabel, lastEmailAt,
     updatedAt: now, deletedAt: ''
   });
 
-  const caseRecord = groupId ? getRecordByKey_('case', groupId) : null;
+  upsertRecords_(pending, storage);
+
+  const caseRecord = groupId ? getRecordByKey_('case', groupId, storage.records) : null;
   const caseLabelSync = syncThreadCaseLabel_(threadId, caseRecord);
   let statusLabelSync = syncThreadStatusLabels_(threadId, conversationStatus, caseRecord?.status || '');
   if (caseRecord && caseStatusChanged) {
-    const caseStatusSync = syncCaseStatusLabels_(caseRecord.key);
+    const caseStatusSync = syncCaseStatusLabels_(caseRecord.key, storage.records);
     if (!caseStatusSync.ok && statusLabelSync.ok) statusLabelSync = caseStatusSync;
   }
 
-  refreshDashboard_();
-  const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel});
+  refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
+  const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel}, storage.records);
   const labelError = !caseLabelSync.ok ? caseLabelSync.error : (!statusLabelSync.ok ? statusLabelSync.error : '');
   if (labelError) {
     return updateCardResponseWithNotification_(
@@ -144,7 +148,7 @@ function saveConversation(e) {
 }
 
 function removeCaseAction(e) {
-  ensureStorage_();
+  const storage = loadStorageSnapshot_();
   const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
   const caseId = params.caseId || '';
   const context = {
@@ -153,24 +157,28 @@ function removeCaseAction(e) {
     lastEmailAt: params.lastEmailAt || '',
     lastEmailLabel: params.lastEmailLabel || ''
   };
-  const caseRecord = caseId ? getRecordByKey_('case', caseId) : null;
-  if (!caseRecord) return updateCardResponse_(buildConversationCard_(context));
+  const caseRecord = caseId ? getRecordByKey_('case', caseId, storage.records) : null;
+  if (!caseRecord) return updateCardResponse_(buildConversationCard_(context, storage.records));
 
   const now = new Date().toISOString();
-  const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
+  const members = getActiveRecords_('member', storage.records).filter((member) => member.groupId === caseId);
+  const updates = members.map((member) => Object.assign({}, member, {
+    groupId: '', updatedAt: now, deletedAt: ''
+  }));
+  updates.push(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
+  upsertRecords_(updates, storage);
+
   members.forEach((member) => {
-    upsertRecord_(Object.assign({}, member, {groupId: '', updatedAt: now, deletedAt: ''}));
     syncThreadCaseLabel_(member.threadId, null);
-    const note = getRecordByConversation_('note', member.threadId, member.subject);
+    const note = getRecordByConversation_('note', member.threadId, member.subject, storage.records);
     syncThreadStatusLabels_(member.threadId, note?.text || '', '');
   });
 
-  upsertRecord_(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
   deleteCaseLabel_(caseRecord);
-  refreshDashboard_();
+  refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
 
   return updateCardResponseWithNotification_(
-    buildConversationCard_(context),
+    buildConversationCard_(context, storage.records),
     `Caso rimosso: ${caseRecord.name || caseRecord.key}`,
     true
   );
@@ -219,7 +227,7 @@ function buildHomeCard_() {
       .setOnClickAction(CardService.newAction().setFunctionName('setupStorageAction')));
   } else {
     const ss = SpreadsheetApp.openById(spreadsheetId);
-    const dashboard = ensureDashboardSheet_(ss);
+    const dashboard = getDashboardSheet_(ss);
     section.addWidget(CardService.newKeyValue().setTopLabel('Storage').setContent(ss.getName()));
     section.addWidget(CardService.newTextButton().setText('Apri Google Sheet').setOpenLink(CardService.newOpenLink().setUrl(ss.getUrl())));
     section.addWidget(CardService.newTextButton()
@@ -236,9 +244,10 @@ function buildHomeCard_() {
   return card.build();
 }
 
-function buildConversationCard_(context) {
-  const state = getConversationState_(context.threadId, context.subject);
-  const statuses = getStatusCatalog_();
+function buildConversationCard_(context, records) {
+  const snapshot = records || loadStorageSnapshot_().records;
+  const state = getConversationState_(context.threadId, context.subject, snapshot);
+  const statuses = getStatusCatalog_(snapshot);
   const card = CardService.newCardBuilder();
   card.setHeader(CardService.newCardHeader().setTitle('Gmail Superpowers').setSubtitle(context.subject || 'Conversazione'));
 
@@ -276,7 +285,7 @@ function buildConversationCard_(context) {
   if (state.deadline?.dueDate) picker.setValueInMsSinceEpoch(dateIsoToMs_(state.deadline.dueDate));
   form.addWidget(picker);
 
-  const cases = getActiveRecords_('case').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const cases = getActiveRecords_('case', snapshot).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const selection = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
     .setFieldName('caseId');
@@ -305,13 +314,13 @@ function buildConversationCard_(context) {
 
   if (state.caseRecord) {
     const related = CardService.newCardSection().setHeader('Caso: ' + (state.caseRecord.name || ''));
-    const members = getActiveRecords_('member').filter((member) => member.groupId === state.caseRecord.key);
+    const members = getActiveRecords_('member', snapshot).filter((member) => member.groupId === state.caseRecord.key);
     if (!members.length) {
       related.addWidget(CardService.newTextParagraph().setText('Nessuna conversazione collegata.'));
     } else {
       members.forEach((member) => {
-        const note = getRecordByConversation_('note', member.threadId, member.subject);
-        const deadline = getRecordByConversation_('deadline', member.threadId, member.subject);
+        const note = getRecordByConversation_('note', member.threadId, member.subject, snapshot);
+        const deadline = getRecordByConversation_('deadline', member.threadId, member.subject, snapshot);
         const details = [];
         if (member.lastEmailAt || member.lastEmailLabel) details.push('ultima email ' + (member.lastEmailLabel || formatDateTime_(member.lastEmailAt)));
         if (deadline?.dueDate) details.push('scade ' + deadline.dueDate);
@@ -359,7 +368,7 @@ function resolveStatusInput_(e, selectedField, newField) {
   return cleanStatus_(getStringInput_(e, selectedField));
 }
 
-function getStatusCatalog_() {
+function getStatusCatalog_(records) {
   const statuses = new Map();
   const add = (value) => {
     const clean = cleanStatus_(value);
@@ -368,8 +377,9 @@ function getStatusCatalog_() {
     if (!statuses.has(key)) statuses.set(key, clean);
   };
 
-  getActiveRecords_('note').forEach((record) => add(record.text));
-  getActiveRecords_('case').forEach((record) => add(record.status));
+  const source = listRecords_(false, records);
+  source.filter((record) => record.type === 'note').forEach((record) => add(record.text));
+  source.filter((record) => record.type === 'case').forEach((record) => add(record.status));
   GmailApp.getUserLabels().forEach((label) => {
     const name = label.getName();
     if (isManagedStatusLabelName_(name)) add(name.slice(GSP_STATUS_LABEL_ROOT.length + 1));
@@ -387,14 +397,14 @@ function doPost(e) {
   try {
     const body = JSON.parse((e.postData && e.postData.contents) || '{}');
     if (!isValidSyncToken_(body.token)) return json_({ok: false, error: 'unauthorized'});
-    ensureStorage_();
     if (body.action === 'ping') return json_({ok: true, version: GSP_VERSION});
     if (body.action !== 'sync') return json_({ok: false, error: 'unsupported_action'});
 
+    const storage = loadStorageSnapshot_();
     const incoming = Array.isArray(body.records) ? body.records : [];
-    mergeRecords_(incoming);
-    refreshDashboard_();
-    return json_({ok: true, version: GSP_VERSION, records: listRecords_(true)});
+    upsertRecords_(incoming, storage);
+    refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
+    return json_({ok: true, version: GSP_VERSION, records: listRecords_(true, storage.records)});
   } catch (error) {
     console.error(error);
     return json_({ok: false, error: String(error && error.message ? error.message : error)});
@@ -412,14 +422,15 @@ function setupGmailSuperpowers() {
     spreadsheetId = spreadsheet.getId();
     props.setProperty('GSP_STORAGE_SPREADSHEET_ID', spreadsheetId);
   }
-  ensureRecordSheet_(spreadsheet);
-  ensureDashboardSheet_(spreadsheet);
+  const recordSheet = ensureRecordSheet_(spreadsheet);
+  const dashboardSheet = ensureDashboardSheet_(spreadsheet);
   if (!props.getProperty('GSP_SYNC_TOKEN')) rotateSyncToken();
-  refreshDashboard_(spreadsheet);
+  const records = readRecordsFromSheet_(recordSheet);
+  refreshDashboard_(spreadsheet, records, dashboardSheet);
   const result = {
     spreadsheetId,
     spreadsheetUrl: spreadsheet.getUrl(),
-    dashboardUrl: `${spreadsheet.getUrl()}#gid=${ensureDashboardSheet_(spreadsheet).getSheetId()}`,
+    dashboardUrl: `${spreadsheet.getUrl()}#gid=${dashboardSheet.getSheetId()}`,
     syncToken: props.getProperty('GSP_SYNC_TOKEN'),
     webAppUrl: ScriptApp.getService().getUrl() || ''
   };
@@ -437,10 +448,7 @@ function rotateSyncToken() {
 function ensureStorage_() {
   const props = PropertiesService.getScriptProperties();
   if (!props.getProperty('GSP_STORAGE_SPREADSHEET_ID')) setupGmailSuperpowers();
-  const ss = SpreadsheetApp.openById(props.getProperty('GSP_STORAGE_SPREADSHEET_ID'));
-  ensureRecordSheet_(ss);
-  ensureDashboardSheet_(ss);
-  return ss;
+  return SpreadsheetApp.openById(props.getProperty('GSP_STORAGE_SPREADSHEET_ID'));
 }
 
 function ensureRecordSheet_(ss) {
@@ -449,9 +457,13 @@ function ensureRecordSheet_(ss) {
   const firstRow = sheet.getRange(1, 1, 1, GSP_COLUMNS.length).getValues()[0];
   if (firstRow.join('|') !== GSP_COLUMNS.join('|')) {
     sheet.getRange(1, 1, 1, GSP_COLUMNS.length).setValues([GSP_COLUMNS]);
-    sheet.setFrozenRows(1);
   }
+  sheet.setFrozenRows(1);
   return sheet;
+}
+
+function getRecordSheet_(ss) {
+  return ss.getSheetByName(GSP_RECORD_SHEET) || ensureRecordSheet_(ss);
 }
 
 function ensureDashboardSheet_(ss) {
@@ -476,15 +488,54 @@ function ensureDashboardSheet_(ss) {
   return sheet;
 }
 
-function refreshDashboard_(spreadsheet) {
+function getDashboardSheet_(ss) {
+  return ss.getSheetByName(GSP_DASHBOARD_SHEET) || ensureDashboardSheet_(ss);
+}
+
+function loadStorageSnapshot_(spreadsheet) {
   const ss = spreadsheet || ensureStorage_();
-  const dashboard = ensureDashboardSheet_(ss);
-  const records = listRecords_(false);
-  const cases = records.filter((record) => record.type === 'case');
-  const members = records.filter((record) => record.type === 'member');
+  const recordSheet = getRecordSheet_(ss);
+  const dashboardSheet = getDashboardSheet_(ss);
+  return {
+    ss,
+    recordSheet,
+    dashboardSheet,
+    records: readRecordsFromSheet_(recordSheet)
+  };
+}
+
+function readRecordsFromSheet_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const values = sheet.getRange(2, 1, lastRow - 1, GSP_COLUMNS.length).getDisplayValues();
+  return values.map(rowToRecord_).filter((record) => record.type && record.key);
+}
+
+function writeRecordsToSheet_(sheet, records) {
+  const rows = records.map(recordToRow_);
+  const previousLastRow = sheet.getLastRow();
+  const requiredRows = rows.length + 1;
+  if (sheet.getMaxRows() < requiredRows) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), requiredRows - sheet.getMaxRows());
+  }
+  if (rows.length) {
+    sheet.getRange(2, 1, rows.length, GSP_COLUMNS.length).setValues(rows);
+  }
+  const previousDataRows = Math.max(0, previousLastRow - 1);
+  if (previousDataRows > rows.length) {
+    sheet.getRange(rows.length + 2, 1, previousDataRows - rows.length, GSP_COLUMNS.length).clearContent();
+  }
+}
+
+function refreshDashboard_(spreadsheet, records, dashboardSheet) {
+  const ss = spreadsheet || ensureStorage_();
+  const dashboard = dashboardSheet || getDashboardSheet_(ss);
+  const source = listRecords_(false, records || readRecordsFromSheet_(getRecordSheet_(ss)));
+  const cases = source.filter((record) => record.type === 'case');
+  const members = source.filter((record) => record.type === 'member');
   const casesById = new Map(cases.map((record) => [record.key, record]));
-  const notes = records.filter((record) => record.type === 'note');
-  const deadlines = records.filter((record) => record.type === 'deadline');
+  const notes = source.filter((record) => record.type === 'note');
+  const deadlines = source.filter((record) => record.type === 'deadline');
 
   const rows = [];
   const membersByCase = new Map();
@@ -514,14 +565,20 @@ function refreshDashboard_(spreadsheet) {
     .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'));
   dangling.forEach((member) => rows.push(dashboardRow_(null, member, notes, deadlines)));
 
-  const maxRows = dashboard.getMaxRows();
-  if (maxRows > 1) dashboard.getRange(2, 1, maxRows - 1, GSP_DASHBOARD_COLUMNS.length).clearContent();
+  const previousLastRow = dashboard.getLastRow();
+  const requiredRows = rows.length + 1;
+  if (dashboard.getMaxRows() < requiredRows) {
+    dashboard.insertRowsAfter(dashboard.getMaxRows(), requiredRows - dashboard.getMaxRows());
+  }
   if (rows.length) {
-    if (dashboard.getMaxRows() < rows.length + 1) {
-      dashboard.insertRowsAfter(dashboard.getMaxRows(), rows.length + 1 - dashboard.getMaxRows());
-    }
-    const range = dashboard.getRange(2, 1, rows.length, GSP_DASHBOARD_COLUMNS.length);
-    range.setValues(rows).setVerticalAlignment('top').setWrap(true);
+    dashboard.getRange(2, 1, rows.length, GSP_DASHBOARD_COLUMNS.length)
+      .setValues(rows)
+      .setVerticalAlignment('top')
+      .setWrap(true);
+  }
+  const previousDataRows = Math.max(0, previousLastRow - 1);
+  if (previousDataRows > rows.length) {
+    dashboard.getRange(rows.length + 2, 1, previousDataRows - rows.length, GSP_DASHBOARD_COLUMNS.length).clearContent();
   }
 
   const filter = dashboard.getFilter();
@@ -556,72 +613,82 @@ function findConversationRecord_(records, member) {
   }) || null;
 }
 
-function listRecords_(includeDeleted) {
-  const ss = ensureStorage_();
-  const sheet = ensureRecordSheet_(ss);
-  if (sheet.getLastRow() < 2) return [];
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, GSP_COLUMNS.length).getDisplayValues();
-  return values.map(rowToRecord_).filter((record) => record.type && record.key && (includeDeleted || !record.deletedAt));
+function listRecords_(includeDeleted, records) {
+  const source = records || loadStorageSnapshot_().records;
+  return source.filter((record) => record.type && record.key && (includeDeleted || !record.deletedAt));
 }
 
-function getActiveRecords_(type) {
-  return listRecords_(false).filter((record) => record.type === type);
+function getActiveRecords_(type, records) {
+  return listRecords_(false, records).filter((record) => record.type === type);
 }
 
-function getRecordByKey_(type, key) {
-  return listRecords_(false).find((record) => record.type === type && record.key === key) || null;
+function getRecordByKey_(type, key, records) {
+  return listRecords_(false, records).find((record) => record.type === type && record.key === key) || null;
 }
 
-function getRecordByConversation_(type, threadId, subject) {
+function getRecordByConversation_(type, threadId, subject, records) {
   const normalized = normalizeSubject_(subject);
-  return listRecords_(false).find((record) => {
+  return listRecords_(false, records).find((record) => {
     if (record.type !== type) return false;
     if (threadId && (record.threadId === threadId || record.key === 'thread:' + threadId || record.key.endsWith(':thread:' + threadId))) return true;
     return normalized && normalizeSubject_(record.subject) === normalized;
   }) || null;
 }
 
-function getConversationState_(threadId, subject) {
-  const note = getRecordByConversation_('note', threadId, subject);
-  const deadline = getRecordByConversation_('deadline', threadId, subject);
-  const member = getRecordByConversation_('member', threadId, subject);
-  const caseRecord = member && member.groupId ? getRecordByKey_('case', member.groupId) : null;
+function getConversationState_(threadId, subject, records) {
+  const note = getRecordByConversation_('note', threadId, subject, records);
+  const deadline = getRecordByConversation_('deadline', threadId, subject, records);
+  const member = getRecordByConversation_('member', threadId, subject, records);
+  const caseRecord = member && member.groupId ? getRecordByKey_('case', member.groupId, records) : null;
   return {note, deadline, member, caseRecord};
 }
 
 function mergeRecords_(records) {
-  records.forEach((raw) => {
-    const record = normalizeRecord_(raw);
-    if (!record.type || !record.key) return;
-    upsertRecord_(record);
-  });
+  return upsertRecords_(records);
 }
 
 function upsertRecord_(raw) {
-  const record = normalizeRecord_(raw);
-  const ss = ensureStorage_();
-  const sheet = ensureRecordSheet_(ss);
-  const lastRow = sheet.getLastRow();
-  let targetRow = -1;
-  let existing = null;
+  const results = upsertRecords_([raw]);
+  return results[0] || null;
+}
 
-  if (lastRow >= 2) {
-    const values = sheet.getRange(2, 1, lastRow - 1, GSP_COLUMNS.length).getDisplayValues();
-    for (let i = 0; i < values.length; i++) {
-      const candidate = rowToRecord_(values[i]);
-      if (candidate.type === record.type && candidate.key === record.key) {
-        targetRow = i + 2;
-        existing = candidate;
-        break;
-      }
+function upsertRecords_(rawRecords, storage) {
+  const ctx = storage || loadStorageSnapshot_();
+  const records = ctx.records;
+  const index = new Map();
+  records.forEach((record, position) => index.set(recordIdentity_(record), position));
+
+  const results = [];
+  let changed = false;
+
+  rawRecords.forEach((raw) => {
+    const record = normalizeRecord_(raw);
+    if (!record.type || !record.key) return;
+    const identity = recordIdentity_(record);
+    const position = index.has(identity) ? index.get(identity) : -1;
+    const existing = position >= 0 ? records[position] : null;
+
+    if (existing && compareRecordTime_(record, existing) < 0) {
+      results.push(existing);
+      return;
     }
-  }
 
-  if (existing && compareRecordTime_(record, existing) < 0) return existing;
-  const row = recordToRow_(record);
-  if (targetRow > 0) sheet.getRange(targetRow, 1, 1, GSP_COLUMNS.length).setValues([row]);
-  else sheet.appendRow(row);
-  return record;
+    if (position >= 0) {
+      records[position] = record;
+    } else {
+      index.set(identity, records.length);
+      records.push(record);
+    }
+    results.push(record);
+    changed = true;
+  });
+
+  if (changed) writeRecordsToSheet_(ctx.recordSheet, records);
+  return results;
+}
+
+function recordIdentity_(record) {
+  return `${record.type}|${record.key}`;
 }
 
 function compareRecordTime_(a, b) {
@@ -662,13 +729,14 @@ function recordToRow_(record) {
   return GSP_COLUMNS.map((column) => record[column] || '');
 }
 
-function syncAllGmailLabels_() {
+function syncAllGmailLabels_(records) {
   ensureCaseRootLabel_();
   ensureStatusRootLabel_();
-  const cases = getActiveRecords_('case');
+  const source = listRecords_(false, records);
+  const cases = source.filter((record) => record.type === 'case');
   const casesById = new Map(cases.map((item) => [item.key, item]));
-  const members = getActiveRecords_('member');
-  const notes = getActiveRecords_('note');
+  const members = source.filter((record) => record.type === 'member');
+  const notes = source.filter((record) => record.type === 'note');
   const notesByThread = new Map(notes.filter((item) => item.threadId).map((item) => [item.threadId, item]));
   const membersByThread = new Map(members.filter((item) => item.threadId).map((item) => [item.threadId, item]));
   const threadIds = new Set([...notesByThread.keys(), ...membersByThread.keys()]);
@@ -689,17 +757,17 @@ function syncAllGmailLabels_() {
     if (isManagedCaseLabelName_(name) && !activeCaseLabelNames.has(name)) GmailApp.deleteLabel(label);
   });
 
-  return {threads: threadCount, cases: activeCaseLabelNames.size, statuses: getStatusCatalog_().length};
+  return {threads: threadCount, cases: activeCaseLabelNames.size, statuses: getStatusCatalog_(source).length};
 }
 
-function syncCaseStatusLabels_(caseId) {
-  const caseRecord = caseId ? getRecordByKey_('case', caseId) : null;
+function syncCaseStatusLabels_(caseId, records) {
+  const caseRecord = caseId ? getRecordByKey_('case', caseId, records) : null;
   if (!caseRecord) return {ok: true, labels: []};
-  const members = getActiveRecords_('member').filter((member) => member.groupId === caseId);
+  const members = getActiveRecords_('member', records).filter((member) => member.groupId === caseId);
   let firstError = '';
   const labels = new Set();
   members.forEach((member) => {
-    const note = getRecordByConversation_('note', member.threadId, member.subject);
+    const note = getRecordByConversation_('note', member.threadId, member.subject, records);
     const result = syncThreadStatusLabels_(member.threadId, note?.text || '', caseRecord.status || '');
     result.labels.forEach((label) => labels.add(label));
     if (!result.ok && !firstError) firstError = result.error;
