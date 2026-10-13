@@ -128,6 +128,56 @@ function gspArchiveCase_(caseId) {
   if(!stillNamed)deleteCaseLabel_(rec);
   return done;
 }
+/**
+ * Delete only the case container. Keep Gmail messages and all conversation
+ * metadata (member/note/deadline) as ungrouped operational records.
+ * This differs from archiving, which stores a restorable case snapshot.
+ */
+function gspDeleteCase_(caseId) {
+  const ctx = loadStorageSnapshot_();
+  const caseRecord = getRecordByKey_('case', caseId, ctx.records);
+  if (!caseRecord) throw new Error('Caso non trovato');
+
+  const now = new Date().toISOString();
+  const members = ctx.records.filter(r => r.type === 'member' && r.groupId === caseId);
+  members.forEach(member => {
+    member.groupId = '';
+    member.updatedAt = now;
+  });
+
+  const remaining = ctx.records.filter(r => !(r.type === 'case' && r.key === caseId));
+  writeRecordsToSheet_(ctx.recordSheet, remaining);
+  refreshDashboard_(ctx.ss, remaining, ctx.dashboardSheet);
+
+  // Gmail label updates are best-effort: the Sheet is already the source of truth.
+  const warnings = [];
+  members.filter(m => !m.deletedAt && m.threadId).forEach(member => {
+    const result = syncThreadCaseLabel_(member.threadId, null);
+    if (!result.ok) warnings.push(result.error || 'Label Gmail non aggiornata');
+  });
+  const nameStillUsed = getActiveRecords_('case', remaining)
+    .some(item => caseLabelName_(item) === caseLabelName_(caseRecord));
+  if (!nameStillUsed) {
+    try { deleteCaseLabel_(caseRecord); }
+    catch (error) { warnings.push(String(error.message || error)); }
+  }
+  return {ok: true, unlinked: members.filter(m => !m.deletedAt).length, warnings};
+}
+
+/** Permanently delete a stored case snapshot, never the Gmail messages. */
+function gspDeleteArchivedCase_(archiveId, confirmName) {
+  const ctx = loadStorageSnapshot_();
+  const archive = gspReadArchive_(ctx.ss);
+  const item = archive.find(a => a.id === archiveId && a.type === 'case');
+  if (!item) throw new Error('Caso archiviato non trovato');
+  if (!confirmName || confirmName !== item.name) {
+    throw new Error('Conferma non valida: digita il nome esatto del caso');
+  }
+  gspWriteArchive_(ctx.ss, archive.filter(a => a.id !== archiveId));
+  gspRefreshArchive_(ctx.ss);
+  return {ok: true};
+}
+
 function gspArchiveConversation_(threadId,subject) {
   const ctx=loadStorageSnapshot_();
   const state=getConversationState_(threadId,subject,ctx.records);

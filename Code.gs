@@ -144,6 +144,15 @@ function archiveCaseAction(e) {
   );
 }
 
+function deleteCaseAction(e) {
+  const params = e.commonEventObject?.parameters || {};
+  const result = gspDeleteCase_(params.caseId || '');
+  const context = {threadId: params.threadId || '', subject: params.subject || '',
+    lastEmailAt: params.lastEmailAt || '', lastEmailLabel: params.lastEmailLabel || ''};
+  return updateCardResponseWithNotification_(buildConversationCard_(context),
+    'Caso eliminato; ' + result.unlinked + ' email scollegate e conservate.', true);
+}
+
 function archiveConversationAction(e) {
   const params = e.commonEventObject?.parameters || {};
   const context = {
@@ -346,6 +355,12 @@ function buildConversationCard_(context, records) {
         subject: context.subject || '',
         lastEmailAt: context.lastEmailAt || '',
         lastEmailLabel: context.lastEmailLabel || ''
+      })));
+    related.addWidget(CardService.newTextButton()
+      .setText('Elimina caso (conserva le email)')
+      .setOnClickAction(CardService.newAction().setFunctionName('deleteCaseAction').setParameters({
+        caseId: state.caseRecord.key, threadId: context.threadId || '', subject: context.subject || '',
+        lastEmailAt: context.lastEmailAt || '', lastEmailLabel: context.lastEmailLabel || ''
       })));
     related.addWidget(CardService.newTextButton()
       .setText('Chiudi e archivia caso')
