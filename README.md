@@ -47,3 +47,9 @@ Do not use old Tampermonkey scripts or the old sync-bridge setup. The old bridge
 ### Important limits
 
 The latest email timestamp reflects the last timestamp known to the app, not necessarily a continuously refreshed Gmail inbox. The operational dashboard is a Google Sheet summary; advanced interactive editing of case rows is not yet implemented. Archiving a case removes its records from the operational source sheet, but **does not archive its actual Gmail messages**. Automatic deployment and installed add-on refresh depend on your Apps Script configuration.
+
+## Dashboard visuale
+
+Il progetto include `Dashboard.html`, `DashboardApi.gs` e `DashboardOperations.gs`. Dopo `clasp push` verifica che `Dashboard.html` sia presente nell'editor Apps Script. Distribuisci il progetto come **App web**, eseguendo come proprietario e limitando l'accesso al solo proprietario. Apri il relativo URL `/exec`. Per provare il codice HEAD puoi usare il deployment di prova `/dev` (accessibile agli editor del progetto).
+
+La dashboard mostra casi, conversazioni, scadenze e archivio. È possibile modificare stato, note e scadenza di una conversazione, scollegarla dal caso, archiviarla o ripristinarla. Effettua un backup del foglio prima di testare azioni distruttive. La UI non sostituisce l'add-on Gmail.
