@@ -1,262 +1,49 @@
 # Gmail Superpowers
 
-Tampermonkey userscript that adds a small local workflow layer to Gmail: portable email links, per-conversation statuses, deadlines, Cases, a separate administration dashboard, Markdown export, and JSON backup/import.
+Google Workspace Gmail add-on with **Google Sheets as the only data store**. No Tampermonkey, IndexedDB, browser synchronization or legacy /exec bridge is needed.
 
-All workflow data is stored locally in the browser with IndexedDB. No external backend is required.
+## Data model
 
-## Quick actions inside Gmail
+The protected source of truth is the `records` worksheet, with existing logical record types:
 
-Each message row and opened conversation keeps the lightweight actions that are useful while reading email:
+- `case`: a named collection of related conversations. Cases **have no status**.
+- `member`: a Gmail conversation linked to a case, or an independent conversation.
+- `note`: per-conversation state and notes.
+- `deadline`: per-conversation due date.
 
-- **Link** — copies a portable Gmail Search URL based on the subject.
-- **Markdown** — copies the same search as Markdown.
-- **Case** — links the opened conversation to a Case.
+The `dashboard` worksheet is automatically rebuilt as a **single row per case**, plus one row per ungrouped conversation. A case row summarizes linked conversation count, individual email statuses, earliest deadline and latest known message timestamp. The detail column contains the linked conversation descriptions. The dashboard is a derived overview, not the editable source of truth.
 
-Example portable link:
+The `archivio` worksheet is a concise list of closed cases and conversations, while the hidden `_archivio_dati` worksheet retains their complete JSON record snapshots. Archived records are removed from the operative `records` worksheet and can be restored from the Gmail add-on home. The archive thus preserves IDs and historical metadata without cluttering the operational sheets.
 
-```md
-[email: Preventivo settembre](https://mail.google.com/mail/#search/...)
-```
+### Operations
 
-The link intentionally uses a subject search rather than a mailbox-specific message ID, so another recipient who has the same email can use it too.
+Within the Gmail add-on for an opened conversation, users can:
+- select or create a case, edit that conversation's status, notes and due date;
+- **Scollega questa email dal caso**: unlink one conversation while retaining its notes and deadline as an independent item;
+- **Chiudi e archivia questa email**: archive a single conversation without deleting the Gmail message;
+- **Chiudi e archivia caso**: archive the case together with all linked conversations and their metadata.
 
-## Conversation status
+From the add-on home, `Ripristina` restores the selected archive entry. Restoration is refused when conflicting record IDs already exist in the operational data.
 
-An opened conversation has a local **Stato** field:
+### Migration
 
-```text
-Stato  Aspetto risposta da Marco   ✓   🗑
-```
+The add-on keeps the original `GSP_STORAGE_SPREADSHEET_ID` setting and the existing `records` worksheet. On first access, the legacy free-text case status is transferred into the case's `notes` field as `Stato precedente del caso: …`, then the former `status` field is cleared. Existing case names, IDs, conversation links, statuses, notes and due dates are retained. Re-running the migration is safe. **Make a backup of the spreadsheet before deploying or running the migration.**
 
-- `Enter` or ✓ saves.
-- Leaving the field saves changes automatically.
-- `Escape` restores the last saved value.
-- 🗑 removes the status.
-
-The saved status is also visible as a compact badge in the Gmail message list.
-
-## Deadlines
-
-Version `0.6.0` adds a **Scadenza** field to every opened conversation.
-
-```text
-Scadenza  [ 15/09/2026 ]   ✓   🗑
-```
-
-A deadline is stored independently from the conversation status, so an email can have:
-
-- a deadline without a status;
-- a status without a deadline;
-- both.
-
-The deadline is also shown directly in the Gmail list. Expired, today, and future deadlines use different visual states.
-
-## Cases
-
-A **Case** groups multiple separate Gmail conversations that belong to the same issue, project, order, follow-up, or decision.
-
-Example:
-
-```text
-Caso: Preventivo Rossi
-Stato del caso: Aspetto conferma finale
-
-Conversazioni:
-- Richiesta preventivo iniziale · ultima email 05/09/2026 14:32
-- Specifiche tecniche · ultima email 06/09/2026 09:18
-- Conferma disponibilità fornitore · ultima email 07/09/2026 11:04
-```
-
-Version `0.6.1` stores and shows the date/time of the latest message known for each conversation linked to a Case. The value is captured when the conversation is linked, refreshed when that conversation is opened again, and can also be backfilled from the Gmail message list when Gmail exposes the row date.
-
-Existing Case memberships remain valid: their latest-email date appears after Gmail Superpowers can observe that conversation again.
-
-The Case status is independent from the status and deadline of each individual conversation.
-
-## Separate Admin dashboard
-
-The **Admin** button in the lower-right corner of Gmail opens a separate browser tab at a local Gmail route used by Gmail Superpowers.
-
-Because the dashboard stays on the `mail.google.com` origin, it can access the same IndexedDB data without a server or synchronization layer.
-
-The dashboard is visually isolated from Gmail and has four sections:
-
-### Scadenze
-
-The default view lists conversations ordered by due date and provides filters for:
-
-- all deadlines;
-- overdue;
-- today;
-- next 7 days;
-- next 30 days.
-
-Each row shows:
-
-```text
-Scadenza | Email | Stato | Caso
-```
-
-The date is editable directly from the dashboard.
-
-### Casi
-
-Shows every Case with:
-
-- Case status;
-- linked conversations;
-- latest known email date/time for each linked conversation;
-- conversation deadlines;
-- conversation-specific statuses.
-
-### Stati
-
-Shows all conversations that have a saved status, ordered with dated items first, together with their deadline and Case when available.
-
-### Export / Import
-
-Version `0.7.0` adds a full JSON backup/import workflow to the Admin dashboard.
-
-The page now provides:
-
-- **Scarica Markdown** — human-readable export;
-- **Copia Markdown** — copies the same Markdown to the clipboard;
-- **Backup JSON** — lossless local backup;
-- **Import JSON** — restores a previously generated Gmail Superpowers backup.
-
-The JSON backup contains:
-
-```text
-notes
-Deadlines
-Cases
-Case memberships
-latest-known email dates
-record timestamps and IDs
-```
-
-The backup also records the source Gmail account slot (`u0`, `u1`, etc.). During import, storage keys are rebased to the Gmail account slot currently open, so a backup created while the same mailbox was loaded in a different Gmail slot can still be restored cleanly.
-
-Two import modes are available:
-
-- **Merge — aggiungi/aggiorna**: existing data remains; imported records with the same key or Case ID replace those records.
-- **Sostituisci i dati correnti**: deletes Gmail Superpowers data for the currently open Gmail account slot before importing the backup. This mode requires an explicit confirmation.
-
-Replace mode does not delete Gmail Superpowers data belonging to other Gmail account slots in the same browser.
-
-Markdown is intentionally not used as the restore format because it is designed for reading and sharing rather than preserving internal IDs and exact relationships.
-
-## Markdown export
-
-The Markdown export includes Cases, Case statuses, conversations, the latest known email date for linked conversations, conversation statuses, and deadlines.
-
-Example:
-
-```md
-# Gmail Superpowers
-
-## Casi
-
-### Preventivo Rossi
-
-Stato: Aspetto conferma finale
-
-Conversazioni:
-- [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
-  - Ultima email: 05/09/2026 14:32
-  - Stato: Aspetto documentazione tecnica
-  - Scadenza: 2026-09-15
-
-## Scadenze
-
-- 2026-09-15 - [email: Richiesta preventivo](https://mail.google.com/mail/#search/...)
-  - Stato: Aspetto documentazione tecnica
-  - Caso: Preventivo Rossi
-```
-
-The exported email links use the same portable subject-search format as the normal Markdown copy action.
-
-## JSON backup format
-
-The backup file is versioned independently from the userscript:
-
-```json
-{
-  "format": "gmail-superpowers-backup",
-  "schemaVersion": 1,
-  "appVersion": "0.7.0",
-  "exportedAt": "2026-09-07T14:00:00.000Z",
-  "sourceAccount": "u0",
-  "data": {
-    "notes": [],
-    "deadlines": [],
-    "cases": [],
-    "members": []
-  }
-}
-```
-
-Import validates both the backup marker and schema version before writing data.
-
-## Local storage
-
-Data is stored in IndexedDB:
-
-```text
-gmail-superpowers
-├── thread-notes
-├── deadlines
-├── cases
-└── case-members
-```
-
-Gmail thread identifiers are used locally when available. When Gmail does not expose a usable thread identifier, the script can fall back to a normalized subject where the match is unambiguous.
-
-The Gmail account slot (`/mail/u/0/`, `/mail/u/1/`, etc.) is part of the local data model so different Gmail accounts in the same browser stay separated.
-
-Local data:
-
-- is not sent to an external API;
-- is not stored in Gmail itself;
-- is not automatically synchronized between browsers or devices;
-- can be removed if browser storage for Gmail is cleared.
-
-For this reason, **Backup JSON** is the recommended way to preserve or move Gmail Superpowers data.
+The Gmail label namespace `gs/` continues to represent case membership, and `gss/` continues to represent individual email statuses only. The bulk sync action reconciles legacy case-derived status labels.
 
 ## Installation
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/).
-2. Open:
+Use a standalone Google Apps Script project with the files `Code.gs`, `Operational.gs`, and `appsscript.json`. Configure `.clasp.json` using `.clasp.json.example` and run `clasp push`, or deploy with your existing GitHub Actions setup. Install the project as a test Gmail Workspace add-on, authorize access to Gmail and Google Sheets, and use the add-on home to initialize storage.
 
-```text
-https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
-```
-
-3. Confirm the installation in Tampermonkey.
-4. Reload Gmail.
-
-## Automatic updates
-
-There is only one userscript file. Both update and download URLs point to it:
-
-```javascript
-// @updateURL    https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
-// @downloadURL  https://raw.githubusercontent.com/menteora/gmail-superpowers/main/gmail-superpowers.user.js
-```
-
-When publishing a new version, increment `@version` in `gmail-superpowers.user.js`.
-
-## Technical notes
-
-Gmail is a single-page application. The normal Gmail integration uses a `MutationObserver` to re-attach lightweight controls while navigating without a full page reload.
-
-The Admin dashboard runs on a dedicated `#gsp-admin` route in a separate tab and uses a Shadow DOM so Gmail's styles do not leak into the administrative interface.
-
-SVG icons are built through DOM APIs instead of assigning SVG markup with `innerHTML`, avoiding Gmail Trusted Types restrictions.
+Do not use old Tampermonkey scripts or the old sync-bridge setup. The old bridge authentication endpoint and token have been removed from the code; if a previously deployed web app exposed this endpoint, disable the old deployment separately in Google Apps Script.
 
 ## Files
 
-```text
-gmail-superpowers.user.js   Main Tampermonkey userscript
-README.md                   Documentation
-```
+- `Code.gs` — native Gmail add-on cards, persistence and Gmail label management.
+- `Operational.gs` — one-row-per-case dashboard, data migration, archive and restore.
+- `appsscript.json` — Workspace add-on manifest.
+- `.github/workflows/deploy-apps-script.yml` — configured deployment workflow.
+
+### Important limits
+
+The latest email timestamp reflects the last timestamp known to the app, not necessarily a continuously refreshed Gmail inbox. The operational dashboard is a Google Sheet summary; advanced interactive editing of case rows is not yet implemented. Archiving a case removes its records from the operational source sheet, but **does not archive its actual Gmail messages**. Automatic deployment and installed add-on refresh depend on your Apps Script configuration.
