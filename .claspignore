@@ -1,5 +1,4 @@
-# Only the native Apps Script add-on sources are pushed.
-# Tampermonkey userscripts and repository support files stay outside Apps Script.
+# Deploy only Apps Script source and manifest; exclude repository documentation.
 **/**
 !appsscript.json
 !**/*.gs
