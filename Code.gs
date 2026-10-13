@@ -217,6 +217,22 @@ function buildHomeCard_() {
     section.addWidget(CardService.newTextButton()
       .setText('Sincronizza label Gmail')
       .setOnClickAction(CardService.newAction().setFunctionName('syncGmailLabelsAction')));
+    const archive = gspEnsureArchiveSheet_(ss);
+    section.addWidget(CardService.newTextButton().setText('Apri archivio')
+      .setOpenLink(CardService.newOpenLink().setUrl(ss.getUrl() + '#gid=' + archive.getSheetId())));
+    const entries = gspReadArchive_(ss);
+    if (entries.length) {
+      const archived = CardService.newCardSection().setHeader('Ripristino archivio');
+      entries.slice(-15).reverse().forEach(item => {
+        archived.addWidget(CardService.newDecoratedText()
+          .setText(item.name || item.id)
+          .setBottomLabel(item.at + ' · ' + (item.type === 'case' ? 'Caso' : 'Email')));
+        archived.addWidget(CardService.newTextButton().setText('Ripristina')
+          .setOnClickAction(CardService.newAction().setFunctionName('restoreArchiveAction')
+            .setParameters({archiveId:item.id})));
+      });
+      card.addSection(archived);
+    }
   }
   card.addSection(section);
   return card.build();
@@ -271,11 +287,6 @@ function buildConversationCard_(context, records) {
   cases.forEach((item) => selection.addItem(item.name || item.key, item.key, item.key === state.member?.groupId));
   form.addWidget(selection);
   form.addWidget(CardService.newTextInput().setFieldName('newCaseName').setTitle('Nuovo caso').setHint('Se compilato, crea un nuovo caso e collega questa conversazione'));
-  form.addWidget(buildStatusSelection_('caseStatus', 'Stato del caso', state.caseRecord?.status || '', statuses));
-  form.addWidget(CardService.newTextInput()
-    .setFieldName('newCaseStatus')
-    .setTitle('Nuovo stato del caso')
-    .setHint(`Se compilato, crea e usa la label ${GSP_STATUS_LABEL_ROOT}/nome stato sulle conversazioni del case`));
 
   const save = CardService.newTextButton()
     .setText('Salva')
@@ -312,17 +323,32 @@ function buildConversationCard_(context, records) {
       });
     }
     related.addWidget(CardService.newTextButton()
-      .setText('Rimuovi caso')
-      .setOnClickAction(CardService.newAction().setFunctionName('removeCaseAction').setParameters({
+      .setText('Scollega questa email dal caso')
+      .setOnClickAction(CardService.newAction().setFunctionName('unlinkConversationAction').setParameters({
         caseId: state.caseRecord.key || '',
         threadId: context.threadId || '',
         subject: context.subject || '',
         lastEmailAt: context.lastEmailAt || '',
         lastEmailLabel: context.lastEmailLabel || ''
       })));
+    related.addWidget(CardService.newTextButton()
+      .setText('Chiudi e archivia caso')
+      .setOnClickAction(CardService.newAction().setFunctionName('archiveCaseAction').setParameters({
+        caseId: state.caseRecord.key, threadId: context.threadId || '', subject: context.subject || '',
+        lastEmailAt: context.lastEmailAt || '', lastEmailLabel: context.lastEmailLabel || ''
+      })));
     card.addSection(related);
   }
-
+  if (state.member || state.note || state.deadline) {
+    const actions = CardService.newCardSection().setHeader('Chiusura');
+    actions.addWidget(CardService.newTextButton()
+      .setText('Chiudi e archivia questa email')
+      .setOnClickAction(CardService.newAction().setFunctionName('archiveConversationAction').setParameters({
+        threadId: context.threadId || '', subject: context.subject || '',
+        lastEmailAt: context.lastEmailAt || '', lastEmailLabel: context.lastEmailLabel || ''
+      })));
+    card.addSection(actions);
+  }
   return card.build();
 }
 
