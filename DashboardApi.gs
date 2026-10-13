@@ -107,13 +107,15 @@ function gspDashboardMutate(payload) {
   const action = String(payload.action || '');
   const id = String(payload.id || '');
   if (!id || id.length > 500) throw new Error('Identificativo non valido');
-  const allowed = ['detach', 'archive-case', 'archive-email', 'restore', 'save-email'];
+  const allowed = ['detach', 'archive-case', 'delete-case', 'delete-archived-case', 'archive-email', 'restore', 'save-email'];
   if (!allowed.includes(action)) throw new Error('Operazione non consentita');
   const lock = LockService.getScriptLock();
   lock.waitLock(25000);
   try {
     if (action === 'detach') return gspDetachByKey_(id);
     if (action === 'archive-case') return gspArchiveCase_(id);
+    if (action === 'delete-case') return gspDeleteCase_(id);
+    if (action === 'delete-archived-case') return gspDeleteArchivedCase_(id, String(payload.confirmName || ''));
     if (action === 'archive-email') return gspArchiveEmailByKey_(id);
     if (action === 'restore') {
       gspRestoreArchive_(id);
