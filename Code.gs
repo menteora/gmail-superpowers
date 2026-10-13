@@ -203,7 +203,7 @@ function buildHomeCard_() {
       .setOpenLink(CardService.newOpenLink().setUrl(webAppUrl)));
   } else {
     section.addWidget(CardService.newTextParagraph()
-      .setText('Dashboard web non pubblicata: Apps Script > Distribuisci > Nuovo deployment > App web.'));
+      .setText(getGspDashboardWebAppHint_()));
   }
   const props = PropertiesService.getScriptProperties();
   const spreadsheetId = props.getProperty('GSP_STORAGE_SPREADSHEET_ID');
@@ -837,13 +837,28 @@ function escapeHtml_(value) {
 
 /** Returns the private Web App URL when the same Apps Script project is deployed. */
 function getGspDashboardWebAppUrl_() {
-  const configured = PropertiesService.getScriptProperties().getProperty('GSP_DASHBOARD_WEBAPP_URL') || '';
-  let deployed = '';
+  const configured = String(PropertiesService.getScriptProperties()
+    .getProperty('GSP_DASHBOARD_WEBAPP_URL') || '').trim();
+  if (isGspDashboardWebAppUrl_(configured)) return configured;
   try {
-    deployed = ScriptApp.getService().getUrl() || '';
+    const deployed = String(ScriptApp.getService().getUrl() || '').trim();
+    if (isGspDashboardWebAppUrl_(deployed)) return deployed;
   } catch (error) {
     console.warn('Dashboard URL non disponibile: ' + error);
   }
-  const valid = url => /^https:\/\/script\.google\.com\/macros\/s\/[^/?]+\/(?:exec|dev)(?:\?.*)?$/.test(url);
-  return valid(configured) ? configured : (valid(deployed) ? deployed : '');
+  return '';
+}
+
+/** Accept both consumer and Workspace-domain Apps Script deployment URLs. */
+function isGspDashboardWebAppUrl_(value) {
+  return /^https:\/\/script\.google\.com\/(?:macros\/s|a\/macros\/[^/]+\/s)\/[^/?#]+\/(?:exec|dev)\/?(?:[?#].*)?$/.test(String(value || '').trim());
+}
+
+function getGspDashboardWebAppHint_() {
+  const configured = String(PropertiesService.getScriptProperties()
+    .getProperty('GSP_DASHBOARD_WEBAPP_URL') || '').trim();
+  if (!configured) {
+    return 'Dashboard: proprietà GSP_DASHBOARD_WEBAPP_URL assente in QUESTO progetto Apps Script. Controlla il progetto collegato all add-on e incolla il link /exec in Impostazioni progetto > Proprietà script.';
+  }
+  return 'Dashboard: GSP_DASHBOARD_WEBAPP_URL è presente, ma il suo valore non è un link di deployment Apps Script riconosciuto. Copia l URL App web /exec da Distribuisci > Gestisci deployment (non l URL dell editor).';
 }
