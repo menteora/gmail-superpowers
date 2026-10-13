@@ -46,10 +46,47 @@ Do not use old Tampermonkey scripts or the old sync-bridge setup. The old bridge
 
 ### Important limits
 
-The latest email timestamp reflects the last timestamp known to the app, not necessarily a continuously refreshed Gmail inbox. The operational dashboard is a Google Sheet summary; advanced interactive editing of case rows is not yet implemented. Archiving a case removes its records from the operational source sheet, but **does not archive its actual Gmail messages**. Automatic deployment and installed add-on refresh depend on your Apps Script configuration.
+The latest email timestamp reflects the last timestamp known to the app, not necessarily a continuously refreshed Gmail inbox. The operational dashboard is a Google Sheet summary; the Sheet itself is a read-only summary; editing individual conversations is available in the separately deployed web dashboard. Archiving a case removes its records from the operational source sheet, but **does not archive its actual Gmail messages**. Automatic deployment and installed add-on refresh depend on your Apps Script configuration.
 
 ## Dashboard visuale
 
-Il progetto include `Dashboard.html`, `DashboardApi.gs` e `DashboardOperations.gs`. Dopo `clasp push` verifica che `Dashboard.html` sia presente nell'editor Apps Script. Distribuisci il progetto come **App web**, eseguendo come proprietario e limitando l'accesso al solo proprietario. Apri il relativo URL `/exec`. Per provare il codice HEAD puoi usare il deployment di prova `/dev` (accessibile agli editor del progetto).
+La dashboard web è servita dallo **stesso progetto Apps Script** dell'add-on Gmail tramite `doGet()` in `DashboardApi.gs`. Utilizza Google Sheets come unica origine dati. La pubblicazione come **App web** è un'operazione manuale, separata da `clasp push` e dall'installazione dell'add-on.
 
-La dashboard mostra casi, conversazioni, scadenze e archivio. È possibile modificare stato, note e scadenza di una conversazione, scollegarla dal caso, archiviarla o ripristinarla. Effettua un backup del foglio prima di testare azioni distruttive. La UI non sostituisce l'add-on Gmail.
+### Prima pubblicazione: operazioni manuali (obbligatorie)
+
+1. Aggiorna il repository locale e carica il codice nello **stesso progetto Apps Script** usato dall'add-on:
+
+   ```bash
+   git pull origin main
+   clasp push
+   clasp open
+   ```
+
+   Se hai già eseguito `clasp push` con il codice aggiornato, non serve ripeterlo. Nell'editor Apps Script verifica che siano presenti `Dashboard.html`, `DashboardApi.gs` e `DashboardOperations.gs`. Il file `.claspignore` deve consentire i file `.html`.
+
+2. Prima di provare archiviazione o modifiche, **crea una copia di backup del Google Sheet**. Verifica che l'add-on sia già stato inizializzato e che la proprietà script `GSP_STORAGE_SPREADSHEET_ID` punti al foglio corretto. Se non hai mai inizializzato l'add-on, fallo dalla sua home in Gmail.
+
+3. Nell'editor di [Google Apps Script](https://script.google.com/home/projects) apri **Distribuisci → Nuovo deployment**.
+4. In **Seleziona tipo**, scegli **App web** (icona a forma di ingranaggio, se mostrata).
+5. Configura il deployment:
+   - **Descrizione:** ad esempio `Gmail Superpowers Dashboard`.
+   - **Esegui come:** **Me (il proprietario)**, così la dashboard usa le autorizzazioni del tuo account.
+   - **Chi può accedere:** **Solo io**. Non pubblicare come `Chiunque`: la dashboard contiene metadati delle email.
+6. Premi **Distribuisci**, completa le eventuali richieste di autorizzazione e copia l'**URL dell'app web** (termina con `/exec`).
+7. Apri l'URL `/exec` con lo **stesso account Google** che possiede lo script. Verifica che si carichino panoramica, casi, email senza caso e archivio. Per le azioni di scrittura, usa inizialmente dati di prova.
+
+> **Importante:** `clasp push` carica i sorgenti nel progetto Apps Script, **ma non pubblica né aggiorna automaticamente** una versione già distribuita della Web App. Il link `/exec` usa la versione selezionata nel deployment.
+
+### Aggiornare una Web App già pubblicata
+
+Dopo ogni modifica al codice:
+
+1. Esegui `git pull origin main` e `clasp push` (se non sono già stati eseguiti).
+2. Nell'editor Apps Script vai su **Distribuisci → Gestisci deployment**.
+3. Seleziona il deployment della dashboard e premi **Modifica** (icona della matita).
+4. Alla voce **Versione**, scegli **Nuova versione**, poi **Distribuisci**.
+5. Riapri il precedente URL `/exec`: normalmente rimane invariato perché hai aggiornato il deployment esistente.
+
+Per provare il codice più recente *prima* di creare una nuova versione, usa **Distribuisci → Deployment di prova → App web** e apri l'URL `/dev` (accessibile agli editor dello script). Il deployment di prova non sostituisce la pubblicazione dell'URL `/exec`.
+
+La Web App e l'add-on Gmail convivono nello stesso progetto: **non occorre reinstallare l'add-on per pubblicare la dashboard**. La dashboard permette ricerca, scadenze, modifica dello stato delle singole email, note, scollegamento, archiviazione e ripristino. L'archiviazione sposta i record tra fogli, ma non archivia i messaggi nella casella Gmail.
