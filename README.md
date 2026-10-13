@@ -90,3 +90,9 @@ Dopo ogni modifica al codice:
 Per provare il codice più recente *prima* di creare una nuova versione, usa **Distribuisci → Deployment di prova → App web** e apri l'URL `/dev` (accessibile agli editor dello script). Il deployment di prova non sostituisce la pubblicazione dell'URL `/exec`.
 
 La Web App e l'add-on Gmail convivono nello stesso progetto: **non occorre reinstallare l'add-on per pubblicare la dashboard**. La dashboard permette ricerca, scadenze, modifica dello stato delle singole email, note, scollegamento, archiviazione e ripristino. L'archiviazione sposta i record tra fogli, ma non archivia i messaggi nella casella Gmail.
+
+### Accesso diretto dall'add-on Gmail e diagnosi della dashboard vuota
+
+Dopo la pubblicazione della Web App, l'add-on Gmail mostra **Apri dashboard visuale** nella home e nel dettaglio delle conversazioni. Il pulsante usa l'URL del deployment dello stesso progetto Apps Script. Se non compare, imposta nelle **Impostazioni progetto → Proprietà script** la chiave `GSP_DASHBOARD_WEBAPP_URL` con l'URL `/exec` del deployment; quindi ricarica l'add-on. **Apri riepilogo Google Sheet** continua ad aprire il foglio di riepilogo, non la dashboard web.
+
+Se la dashboard non mostra casi o email, verifica che `GSP_STORAGE_SPREADSHEET_ID` nelle proprietà script sia l'ID del Google Sheet già usato dall'add-on e che tu abbia aperto la Web App pubblicata dallo **stesso progetto Apps Script**. Non inizializzare un nuovo archivio per risolvere un problema di collegamento: potresti ottenere un foglio vuoto diverso dal precedente. Se i dati non si caricano, la dashboard ora segnala esplicitamente la configurazione mancante. Dopo `clasp push` aggiorna il deployment della Web App a **Nuova versione**.
