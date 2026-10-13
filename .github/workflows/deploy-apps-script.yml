@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - '*.gs'
+      - '*.html'
       - 'appsscript.json'
       - '.github/workflows/deploy-apps-script.yml'
   workflow_dispatch:
@@ -55,6 +56,13 @@ jobs:
               files.append({
                   'name': path.stem,
                   'type': 'SERVER_JS',
+                  'source': path.read_text(encoding='utf-8'),
+              })
+
+          for path in sorted(Path('.').glob('*.html')):
+              files.append({
+                  'name': path.stem,
+                  'type': 'HTML',
                   'source': path.read_text(encoding='utf-8'),
               })
 
