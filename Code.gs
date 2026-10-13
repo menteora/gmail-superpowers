@@ -195,6 +195,16 @@ function buildHomeCard_() {
   const card = CardService.newCardBuilder();
   card.setHeader(CardService.newCardHeader().setTitle('Gmail Superpowers'));
   const section = CardService.newCardSection();
+  const webAppUrl = getGspDashboardWebAppUrl_();
+  if (webAppUrl) {
+    section.addWidget(CardService.newTextButton()
+      .setText('Apri dashboard visuale')
+      .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+      .setOpenLink(CardService.newOpenLink().setUrl(webAppUrl)));
+  } else {
+    section.addWidget(CardService.newTextParagraph()
+      .setText('Dashboard web non pubblicata: Apps Script > Distribuisci > Nuovo deployment > App web.'));
+  }
   const props = PropertiesService.getScriptProperties();
   const spreadsheetId = props.getProperty('GSP_STORAGE_SPREADSHEET_ID');
 
@@ -209,7 +219,7 @@ function buildHomeCard_() {
     section.addWidget(CardService.newKeyValue().setTopLabel('Storage').setContent(ss.getName()));
     section.addWidget(CardService.newTextButton().setText('Apri Google Sheet').setOpenLink(CardService.newOpenLink().setUrl(ss.getUrl())));
     section.addWidget(CardService.newTextButton()
-      .setText('Apri dashboard')
+      .setText('Apri riepilogo Google Sheet')
       .setOpenLink(CardService.newOpenLink().setUrl(`${ss.getUrl()}#gid=${dashboard.getSheetId()}`)));
     section.addWidget(CardService.newTextButton()
       .setText('Aggiorna dashboard')
@@ -261,6 +271,12 @@ function buildConversationCard_(context, records) {
         subject: context.subject || '', kind: 'markdown'
       })));
   info.addWidget(portableButtons);
+  const webAppUrl = getGspDashboardWebAppUrl_();
+  if (webAppUrl) {
+    info.addWidget(CardService.newTextButton()
+      .setText('Apri dashboard visuale')
+      .setOpenLink(CardService.newOpenLink().setUrl(webAppUrl)));
+  }
   card.addSection(info);
 
   const form = CardService.newCardSection().setHeader('Conversazione');
@@ -817,4 +833,17 @@ function escapeHtml_(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/** Returns the private Web App URL when the same Apps Script project is deployed. */
+function getGspDashboardWebAppUrl_() {
+  const configured = PropertiesService.getScriptProperties().getProperty('GSP_DASHBOARD_WEBAPP_URL') || '';
+  let deployed = '';
+  try {
+    deployed = ScriptApp.getService().getUrl() || '';
+  } catch (error) {
+    console.warn('Dashboard URL non disponibile: ' + error);
+  }
+  const valid = url => /^https:\/\/script\.google\.com\/macros\/s\/[^/?]+\/(?:exec|dev)(?:\?.*)?$/.test(url);
+  return valid(configured) ? configured : (valid(deployed) ? deployed : '');
 }
