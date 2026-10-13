@@ -11,7 +11,9 @@ function doGet() {
 
 /** Public RPC: google.script.run cannot invoke functions ending in _. */
 function gspDashboardData() {
-  const ctx = loadStorageSnapshot_();
+  const id = PropertiesService.getScriptProperties().getProperty('GSP_STORAGE_SPREADSHEET_ID');
+  if (!id) throw new Error('Archivio non configurato in questo progetto Apps Script. Apri l add-on Gmail e premi Inizializza storage; poi ricarica la dashboard.');
+  const ctx = loadStorageSnapshot_(SpreadsheetApp.openById(id));
   const active = listRecords_(false, ctx.records);
   const cases = active.filter(row => row.type === 'case');
   const archive = gspReadArchive_(ctx.ss);
