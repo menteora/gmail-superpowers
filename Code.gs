@@ -1,4 +1,4 @@
-const GSP_VERSION = '0.4.2';
+const GSP_VERSION = '0.5.0';
 const GSP_RECORD_SHEET = 'records';
 const GSP_DASHBOARD_SHEET = 'dashboard';
 const GSP_CASE_LABEL_ROOT = 'gs';
@@ -6,11 +6,11 @@ const GSP_STATUS_LABEL_ROOT = 'gss';
 const GSP_COLUMNS = [
   'type', 'key', 'account', 'threadId', 'subject', 'text', 'dueDate',
   'groupId', 'name', 'status', 'url', 'lastEmailLabel', 'lastEmailAt',
-  'createdAt', 'updatedAt', 'deletedAt', 'notes'
+  'createdAt', 'updatedAt', 'deletedAt', 'notes', 'archiveId', 'archivedAt'
 ];
 const GSP_DASHBOARD_COLUMNS = [
-  'Caso', 'Stato caso', 'Email collegata', 'Stato email', 'Note',
-  'Scadenza', 'Ultima email', 'Link'
+  'Tipo', 'Caso / Email', 'N. email', 'Stati delle email', 'Prima scadenza',
+  'Ultima email', 'Dettaglio conversazioni', 'Apri email', 'ID'
 ];
 
 function onHomepage(e) {
@@ -37,10 +37,7 @@ function setupStorageAction(e) {
   return updateCardResponse_(buildHomeCard_());
 }
 
-function rotateSyncTokenAction(e) {
-  rotateSyncToken();
-  return updateCardResponse_(buildHomeCard_());
-}
+
 
 function syncGmailLabelsAction(e) {
   const storage = loadStorageSnapshot_();
@@ -64,12 +61,11 @@ function refreshDashboardAction(e) {
 
 function saveConversation(e) {
   const storage = loadStorageSnapshot_();
-  const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
+  const params = e.commonEventObject?.parameters || {};
   const threadId = params.threadId || '';
   const subject = params.subject || '';
   const lastEmailAt = params.lastEmailAt || '';
   const lastEmailLabel = params.lastEmailLabel || '';
-  const originalCaseId = params.originalCaseId || '';
   const state = getConversationState_(threadId, subject, storage.records);
   const now = new Date().toISOString();
   const key = state.member?.key || state.note?.key || state.deadline?.key || `addon:thread:${threadId}`;
@@ -80,31 +76,22 @@ function saveConversation(e) {
   const dueDate = getDateInputIso_(e, 'dueDate');
   const selectedCaseId = getStringInput_(e, 'caseId');
   const newCaseName = getStringInput_(e, 'newCaseName').trim();
-  const caseStatus = resolveStatusInput_(e, 'caseStatus', 'newCaseStatus');
-
-  let groupId = selectedCaseId || '';
-  let caseStatusChanged = false;
+  let groupId = selectedCaseId;
   const pending = [];
 
   if (newCaseName) {
     groupId = Utilities.getUuid();
     pending.push({
-      type: 'case', key: groupId, account, name: newCaseName, status: caseStatus,
-      createdAt: now, updatedAt: now
+      type: 'case', key: groupId, account, name: newCaseName,
+      notes: '', createdAt: now, updatedAt: now, deletedAt: ''
     });
-    caseStatusChanged = true;
-  } else if (groupId && groupId === originalCaseId) {
-    const currentCase = getRecordByKey_('case', groupId, storage.records);
-    if (currentCase && (currentCase.status || '') !== caseStatus) {
-      pending.push(Object.assign({}, currentCase, {status: caseStatus, updatedAt: now, deletedAt: ''}));
-      caseStatusChanged = true;
-    }
+  } else if (groupId && !getRecordByKey_('case', groupId, storage.records)) {
+    throw new Error('Il caso selezionato non esiste più.');
   }
 
   pending.push({
     type: 'note', key, account, threadId, subject,
-    text: conversationStatus, notes,
-    updatedAt: now, deletedAt: ''
+    text: conversationStatus, notes, updatedAt: now, deletedAt: ''
   });
   pending.push({
     type: 'deadline', key, account, threadId, subject, dueDate,
@@ -117,71 +104,62 @@ function saveConversation(e) {
   });
 
   upsertRecords_(pending, storage);
-
   const caseRecord = groupId ? getRecordByKey_('case', groupId, storage.records) : null;
-  const caseLabelSync = syncThreadCaseLabel_(threadId, caseRecord);
-  let statusLabelSync = syncThreadStatusLabels_(threadId, conversationStatus, caseRecord?.status || '');
-  if (caseRecord && caseStatusChanged) {
-    const caseStatusSync = syncCaseStatusLabels_(caseRecord.key, storage.records);
-    if (!caseStatusSync.ok && statusLabelSync.ok) statusLabelSync = caseStatusSync;
-  }
-
+  const caseSync = syncThreadCaseLabel_(threadId, caseRecord);
+  const statusSync = syncThreadStatusLabels_(threadId, conversationStatus);
   refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
   const card = buildConversationCard_({threadId, subject, lastEmailAt, lastEmailLabel}, storage.records);
-  const labelError = !caseLabelSync.ok ? caseLabelSync.error : (!statusLabelSync.ok ? statusLabelSync.error : '');
-  if (labelError) {
-    return updateCardResponseWithNotification_(
-      card,
-      `Salvato, ma label Gmail non aggiornata: ${labelError}`,
-      true
-    );
-  }
-
-  const appliedLabels = [];
-  if (caseLabelSync.label) appliedLabels.push(caseLabelSync.label);
-  statusLabelSync.labels.forEach((label) => appliedLabels.push(label));
+  const error = !caseSync.ok ? caseSync.error : (!statusSync.ok ? statusSync.error : '');
+  const labels = [caseSync.label, ...statusSync.labels].filter(Boolean);
   return updateCardResponseWithNotification_(
     card,
-    appliedLabels.length ? `Salvato · ${appliedLabels.join(' · ')}` : 'Salvato · nessuna label',
+    error ? `Salvato, ma label Gmail non aggiornata: ${error}` :
+      (labels.length ? `Salvato · ${labels.join(' · ')}` : 'Salvato'),
     true
   );
 }
 
-function removeCaseAction(e) {
-  const storage = loadStorageSnapshot_();
-  const params = (e.commonEventObject && e.commonEventObject.parameters) || {};
-  const caseId = params.caseId || '';
+function unlinkConversationAction(e) {
+  const params = e.commonEventObject?.parameters || {};
   const context = {
-    threadId: params.threadId || '',
-    subject: params.subject || '',
-    lastEmailAt: params.lastEmailAt || '',
-    lastEmailLabel: params.lastEmailLabel || ''
+    threadId: params.threadId || '', subject: params.subject || '',
+    lastEmailAt: params.lastEmailAt || '', lastEmailLabel: params.lastEmailLabel || ''
   };
-  const caseRecord = caseId ? getRecordByKey_('case', caseId, storage.records) : null;
-  if (!caseRecord) return updateCardResponse_(buildConversationCard_(context, storage.records));
-
-  const now = new Date().toISOString();
-  const members = getActiveRecords_('member', storage.records).filter((member) => member.groupId === caseId);
-  const updates = members.map((member) => Object.assign({}, member, {
-    groupId: '', updatedAt: now, deletedAt: ''
-  }));
-  updates.push(Object.assign({}, caseRecord, {updatedAt: now, deletedAt: now}));
-  upsertRecords_(updates, storage);
-
-  members.forEach((member) => {
-    syncThreadCaseLabel_(member.threadId, null);
-    const note = getRecordByConversation_('note', member.threadId, member.subject, storage.records);
-    syncThreadStatusLabels_(member.threadId, note?.text || '', '');
-  });
-
-  deleteCaseLabel_(caseRecord);
-  refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
-
+  const result = gspDetachConversation_(context.threadId, context.subject);
   return updateCardResponseWithNotification_(
-    buildConversationCard_(context, storage.records),
-    `Caso rimosso: ${caseRecord.name || caseRecord.key}`,
-    true
+    buildConversationCard_(context), result.changed ? 'Email scollegata dal caso: dati conservati.' : 'Email già senza caso.', true
   );
+}
+
+function archiveCaseAction(e) {
+  const params = e.commonEventObject?.parameters || {};
+  const context = {
+    threadId: params.threadId || '', subject: params.subject || '',
+    lastEmailAt: params.lastEmailAt || '', lastEmailLabel: params.lastEmailLabel || ''
+  };
+  const result = gspArchiveCase_(params.caseId || '');
+  return updateCardResponseWithNotification_(
+    buildConversationCard_(context),
+    `Caso chiuso e archiviato (${result.conversations} conversazioni). Ripristinabile dalla home.`, true
+  );
+}
+
+function archiveConversationAction(e) {
+  const params = e.commonEventObject?.parameters || {};
+  const context = {
+    threadId: params.threadId || '', subject: params.subject || '',
+    lastEmailAt: params.lastEmailAt || '', lastEmailLabel: params.lastEmailLabel || ''
+  };
+  gspArchiveConversation_(context.threadId, context.subject);
+  return updateCardResponseWithNotification_(
+    buildConversationCard_(context), 'Conversazione chiusa e archiviata. Ripristinabile dalla home.', true
+  );
+}
+
+function restoreArchiveAction(e) {
+  const archiveId = e.commonEventObject?.parameters?.archiveId || '';
+  gspRestoreArchive_(archiveId);
+  return updateCardResponseWithNotification_(buildHomeCard_(), 'Elemento ripristinato nella dashboard.', true);
 }
 
 function showPortableLinkAction(e) {
@@ -376,10 +354,8 @@ function getStatusCatalog_(records) {
     const key = clean.toLocaleLowerCase('it');
     if (!statuses.has(key)) statuses.set(key, clean);
   };
-
-  const source = listRecords_(false, records);
-  source.filter((record) => record.type === 'note').forEach((record) => add(record.text));
-  source.filter((record) => record.type === 'case').forEach((record) => add(record.status));
+  listRecords_(false, records).filter((record) => record.type === 'note')
+    .forEach((record) => add(record.text));
   GmailApp.getUserLabels().forEach((label) => {
     const name = label.getName();
     if (isManagedStatusLabelName_(name)) add(name.slice(GSP_STATUS_LABEL_ROOT.length + 1));
@@ -387,29 +363,9 @@ function getStatusCatalog_(records) {
   return [...statuses.values()].sort((a, b) => a.localeCompare(b, 'it', {sensitivity: 'base'}));
 }
 
-function doGet(e) {
-  const token = e && e.parameter ? e.parameter.token : '';
-  if (!isValidSyncToken_(token)) return json_({ok: false, error: 'unauthorized'});
-  return json_({ok: true, version: GSP_VERSION, storage: !!PropertiesService.getScriptProperties().getProperty('GSP_STORAGE_SPREADSHEET_ID')});
-}
 
-function doPost(e) {
-  try {
-    const body = JSON.parse((e.postData && e.postData.contents) || '{}');
-    if (!isValidSyncToken_(body.token)) return json_({ok: false, error: 'unauthorized'});
-    if (body.action === 'ping') return json_({ok: true, version: GSP_VERSION});
-    if (body.action !== 'sync') return json_({ok: false, error: 'unsupported_action'});
 
-    const storage = loadStorageSnapshot_();
-    const incoming = Array.isArray(body.records) ? body.records : [];
-    upsertRecords_(incoming, storage);
-    refreshDashboard_(storage.ss, storage.records, storage.dashboardSheet);
-    return json_({ok: true, version: GSP_VERSION, records: listRecords_(true, storage.records)});
-  } catch (error) {
-    console.error(error);
-    return json_({ok: false, error: String(error && error.message ? error.message : error)});
-  }
-}
+
 
 function setupGmailSuperpowers() {
   const props = PropertiesService.getScriptProperties();
@@ -424,26 +380,23 @@ function setupGmailSuperpowers() {
   }
   const recordSheet = ensureRecordSheet_(spreadsheet);
   const dashboardSheet = ensureDashboardSheet_(spreadsheet);
-  if (!props.getProperty('GSP_SYNC_TOKEN')) rotateSyncToken();
+  const archiveSheet = gspEnsureArchiveSheet_(spreadsheet);
+  gspEnsureArchiveRecords_(spreadsheet);
   const records = readRecordsFromSheet_(recordSheet);
+  gspMigrateLegacyStatuses_(records, recordSheet);
   refreshDashboard_(spreadsheet, records, dashboardSheet);
+  gspRefreshArchive_(spreadsheet);
   const result = {
     spreadsheetId,
     spreadsheetUrl: spreadsheet.getUrl(),
     dashboardUrl: `${spreadsheet.getUrl()}#gid=${dashboardSheet.getSheetId()}`,
-    syncToken: props.getProperty('GSP_SYNC_TOKEN'),
-    webAppUrl: ScriptApp.getService().getUrl() || ''
+    archiveUrl: `${spreadsheet.getUrl()}#gid=${archiveSheet.getSheetId()}`
   };
   console.log(JSON.stringify(result, null, 2));
   return result;
 }
 
-function rotateSyncToken() {
-  const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
-  PropertiesService.getScriptProperties().setProperty('GSP_SYNC_TOKEN', token);
-  console.log('GSP sync token: ' + token);
-  return token;
-}
+
 
 function ensureStorage_() {
   const props = PropertiesService.getScriptProperties();
@@ -476,15 +429,10 @@ function ensureDashboardSheet_(ss) {
   }
   sheet.setFrozenRows(1);
   sheet.setFrozenColumns(2);
-  sheet.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#f1f3f4');
-  sheet.setColumnWidth(1, 190);
-  sheet.setColumnWidth(2, 190);
-  sheet.setColumnWidth(3, 320);
-  sheet.setColumnWidth(4, 220);
-  sheet.setColumnWidth(5, 360);
-  sheet.setColumnWidth(6, 110);
-  sheet.setColumnWidth(7, 165);
-  sheet.setColumnWidth(8, 320);
+  sheet.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#e8f0fe');
+  const widths = [95, 240, 110, 200, 130, 170, 440, 340, 140];
+  widths.forEach((value, i) => sheet.setColumnWidth(i + 1, value));
+  if (!sheet.isColumnHiddenByUser(9)) sheet.hideColumns(9);
   return sheet;
 }
 
@@ -496,12 +444,11 @@ function loadStorageSnapshot_(spreadsheet) {
   const ss = spreadsheet || ensureStorage_();
   const recordSheet = getRecordSheet_(ss);
   const dashboardSheet = getDashboardSheet_(ss);
-  return {
-    ss,
-    recordSheet,
-    dashboardSheet,
-    records: readRecordsFromSheet_(recordSheet)
-  };
+  const archiveSheet = gspEnsureArchiveSheet_(ss);
+  const archiveRecordSheet = gspEnsureArchiveRecords_(ss);
+  const records = readRecordsFromSheet_(recordSheet);
+  gspMigrateLegacyStatuses_(records, recordSheet);
+  return {ss, recordSheet, dashboardSheet, archiveSheet, archiveRecordSheet, records};
 }
 
 function readRecordsFromSheet_(sheet) {
@@ -528,90 +475,12 @@ function writeRecordsToSheet_(sheet, records) {
 }
 
 function refreshDashboard_(spreadsheet, records, dashboardSheet) {
-  const ss = spreadsheet || ensureStorage_();
-  const dashboard = dashboardSheet || getDashboardSheet_(ss);
-  const source = listRecords_(false, records || readRecordsFromSheet_(getRecordSheet_(ss)));
-  const cases = source.filter((record) => record.type === 'case');
-  const members = source.filter((record) => record.type === 'member');
-  const casesById = new Map(cases.map((record) => [record.key, record]));
-  const notes = source.filter((record) => record.type === 'note');
-  const deadlines = source.filter((record) => record.type === 'deadline');
-
-  const rows = [];
-  const membersByCase = new Map();
-  members.forEach((member) => {
-    const key = member.groupId || '';
-    membersByCase.set(key, [...(membersByCase.get(key) || []), member]);
-  });
-
-  cases
-    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it'))
-    .forEach((caseRecord) => {
-      const linked = (membersByCase.get(caseRecord.key) || [])
-        .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'));
-      if (!linked.length) {
-        rows.push([caseRecord.name || caseRecord.key, caseRecord.status || '', '', '', '', '', '', '']);
-        return;
-      }
-      linked.forEach((member) => rows.push(dashboardRow_(caseRecord, member, notes, deadlines)));
-    });
-
-  (membersByCase.get('') || [])
-    .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'))
-    .forEach((member) => rows.push(dashboardRow_(null, member, notes, deadlines)));
-
-  const dangling = members
-    .filter((member) => member.groupId && !casesById.has(member.groupId))
-    .sort((a, b) => (a.subject || '').localeCompare(b.subject || '', 'it'));
-  dangling.forEach((member) => rows.push(dashboardRow_(null, member, notes, deadlines)));
-
-  const previousLastRow = dashboard.getLastRow();
-  const requiredRows = rows.length + 1;
-  if (dashboard.getMaxRows() < requiredRows) {
-    dashboard.insertRowsAfter(dashboard.getMaxRows(), requiredRows - dashboard.getMaxRows());
-  }
-  if (rows.length) {
-    dashboard.getRange(2, 1, rows.length, GSP_DASHBOARD_COLUMNS.length)
-      .setValues(rows)
-      .setVerticalAlignment('top')
-      .setWrap(true);
-  }
-  const previousDataRows = Math.max(0, previousLastRow - 1);
-  if (previousDataRows > rows.length) {
-    dashboard.getRange(rows.length + 2, 1, previousDataRows - rows.length, GSP_DASHBOARD_COLUMNS.length).clearContent();
-  }
-
-  const filter = dashboard.getFilter();
-  if (filter) filter.remove();
-  if (rows.length) dashboard.getRange(1, 1, rows.length + 1, GSP_DASHBOARD_COLUMNS.length).createFilter();
-  return {rows: rows.length, sheetId: dashboard.getSheetId()};
+  return gspRefreshDashboard_(spreadsheet, records, dashboardSheet);
 }
 
-function dashboardRow_(caseRecord, member, notes, deadlines) {
-  const note = findConversationRecord_(notes, member);
-  const deadline = findConversationRecord_(deadlines, member);
-  const lastEmail = member.lastEmailLabel || (member.lastEmailAt ? formatDateTime_(member.lastEmailAt) : '');
-  return [
-    caseRecord ? (caseRecord.name || caseRecord.key) : '',
-    caseRecord ? (caseRecord.status || '') : '',
-    member.subject || '',
-    note?.text || '',
-    note?.notes || '',
-    deadline?.dueDate || '',
-    lastEmail,
-    member.url || buildGmailSearchUrl_(member.subject || '')
-  ];
-}
 
-function findConversationRecord_(records, member) {
-  if (!member) return null;
-  const normalized = normalizeSubject_(member.subject);
-  return records.find((record) => {
-    if (member.key && record.key === member.key) return true;
-    if (member.threadId && record.threadId === member.threadId) return true;
-    return normalized && normalizeSubject_(record.subject) === normalized;
-  }) || null;
-}
+
+
 
 function listRecords_(includeDeleted, records) {
   const source = records || loadStorageSnapshot_().records;
@@ -643,14 +512,9 @@ function getConversationState_(threadId, subject, records) {
   return {note, deadline, member, caseRecord};
 }
 
-function mergeRecords_(records) {
-  return upsertRecords_(records);
-}
 
-function upsertRecord_(raw) {
-  const results = upsertRecords_([raw]);
-  return results[0] || null;
-}
+
+
 
 function upsertRecords_(rawRecords, storage) {
   const ctx = storage || loadStorageSnapshot_();
@@ -747,33 +611,18 @@ function syncAllGmailLabels_(records) {
     const member = membersByThread.get(threadId) || null;
     const caseRecord = member?.groupId ? casesById.get(member.groupId) || null : null;
     syncThreadCaseLabel_(threadId, caseRecord);
-    syncThreadStatusLabels_(threadId, note?.text || '', caseRecord?.status || '');
+    syncThreadStatusLabels_(threadId, note?.text || '');
     threadCount += 1;
   });
-
   const activeCaseLabelNames = new Set(cases.map(caseLabelName_));
   GmailApp.getUserLabels().forEach((label) => {
     const name = label.getName();
     if (isManagedCaseLabelName_(name) && !activeCaseLabelNames.has(name)) GmailApp.deleteLabel(label);
   });
-
   return {threads: threadCount, cases: activeCaseLabelNames.size, statuses: getStatusCatalog_(source).length};
 }
 
-function syncCaseStatusLabels_(caseId, records) {
-  const caseRecord = caseId ? getRecordByKey_('case', caseId, records) : null;
-  if (!caseRecord) return {ok: true, labels: []};
-  const members = getActiveRecords_('member', records).filter((member) => member.groupId === caseId);
-  let firstError = '';
-  const labels = new Set();
-  members.forEach((member) => {
-    const note = getRecordByConversation_('note', member.threadId, member.subject, records);
-    const result = syncThreadStatusLabels_(member.threadId, note?.text || '', caseRecord.status || '');
-    result.labels.forEach((label) => labels.add(label));
-    if (!result.ok && !firstError) firstError = result.error;
-  });
-  return {ok: !firstError, error: firstError, labels: [...labels]};
-}
+
 
 function syncThreadCaseLabel_(threadId, caseRecord) {
   if (!threadId) return {ok: false, error: 'threadId mancante', label: ''};
@@ -797,32 +646,25 @@ function syncThreadCaseLabel_(threadId, caseRecord) {
   }
 }
 
-function syncThreadStatusLabels_(threadId, conversationStatus, caseStatus) {
+function syncThreadStatusLabels_(threadId, conversationStatus) {
   if (!threadId) return {ok: false, error: 'threadId mancante', labels: []};
   try {
     const thread = GmailApp.getThreadById(threadId);
     if (!thread) return {ok: false, error: 'thread Gmail non trovato', labels: []};
-
     thread.getLabels().forEach((label) => {
       if (isManagedStatusLabelName_(label.getName())) thread.removeLabel(label);
     });
-
-    const wanted = new Map();
-    [conversationStatus, caseStatus].forEach((status) => {
-      const clean = cleanStatus_(status);
-      if (clean) wanted.set(clean.toLocaleLowerCase('it'), clean);
-    });
-
+    const clean = cleanStatus_(conversationStatus);
     const labels = [];
-    wanted.forEach((status) => {
-      const label = ensureStatusLabel_(status);
+    if (clean) {
+      const label = ensureStatusLabel_(clean);
       thread.addLabel(label);
       labels.push(label.getName());
-    });
+    }
     return {ok: true, labels};
   } catch (error) {
     console.warn(`GSP: impossibile sincronizzare label stato per ${threadId}: ${error}`);
-    return {ok: false, error: String(error && error.message ? error.message : error), labels: []};
+    return {ok: false, error: String(error?.message || error), labels: []};
   }
 }
 
@@ -923,14 +765,9 @@ function escapeMarkdownLabel_(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
 }
 
-function isValidSyncToken_(token) {
-  const expected = PropertiesService.getScriptProperties().getProperty('GSP_SYNC_TOKEN');
-  return !!expected && String(token || '') === expected;
-}
 
-function json_(value) {
-  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
-}
+
+
 
 function updateCardResponse_(card, stateChanged) {
   const response = CardService.newActionResponseBuilder()
